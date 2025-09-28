@@ -19,6 +19,22 @@ import { connectToElevenLabs } from "./models/elevenlabs.ts";
 
 const server = createServer();
 
+// Startup environment checks to produce clear boot logs on Deno Deploy
+function checkRequiredEnv(): void {
+    const missing: string[] = [];
+    const required = ["SUPABASE_URL", "SUPABASE_KEY", "JWT_SECRET_KEY"];
+    for (const k of required) {
+        if (!Deno.env.get(k)) missing.push(k);
+    }
+
+    if (missing.length > 0) {
+        console.error("Missing required environment variables:", missing.join(", "));
+        // Don't throw here — allow deploy to capture logs and fail more clearly
+    }
+}
+
+checkRequiredEnv();
+
 const wss: _WebSocketServer = new WebSocketServer({ noServer: true });
 
 wss.on("connection", async (ws: WSWebSocket, payload: IPayload) => {
