@@ -11,23 +11,14 @@ import {
     getChatHistory,
     getSupabaseClient,
 } from "./supabase.ts";
-import { SupabaseClient } from "@supabase/supabase-js";
 import { isDev } from "./utils.ts";
 import { connectToOpenAI } from "./models/openai.ts";
 import { connectToGemini } from "./models/gemini.ts";
 import { connectToElevenLabs } from "./models/elevenlabs.ts";
-import { connectToHume } from "./models/hume.ts";
 
 const server = createServer();
 
-const wss: _WebSocketServer = new WebSocketServer({ noServer: true,
-    perMessageDeflate: false,
- });
-
-wss.on('headers', (headers, req) => {
-    // You should NOT see any "Sec-WebSocket-Extensions" here
-    console.log('WS response headers :', headers);
-});
+const wss: _WebSocketServer = new WebSocketServer({ noServer: true });
 
 wss.on("connection", async (ws: WSWebSocket, payload: IPayload) => {
     const { user, supabase } = payload;
@@ -43,13 +34,13 @@ wss.on("connection", async (ws: WSWebSocket, payload: IPayload) => {
     }
 
     const chatHistory = await getChatHistory(
-        supabase,
+        supabase as any,
         user.user_id,
         user.personality?.key ?? null,
         false,
     );
-    const firstMessage = createFirstMessage(payload);
-    const systemPrompt = createSystemPrompt(chatHistory, payload);
+    const firstMessage = createFirstMessage(payload as any);
+    const systemPrompt = createSystemPrompt(chatHistory as any, payload as any);
 
     const provider = user.personality?.provider;
 
@@ -66,63 +57,74 @@ wss.on("connection", async (ws: WSWebSocket, payload: IPayload) => {
     );
 
     switch (provider) {
-        case "openai":
+        case "openai": {
             await connectToOpenAI(
-                ws,
-                payload,
-                connectionPcmFile,
-                firstMessage,
-                systemPrompt,
+                ws as any,
+                payload as any,
+                connectionPcmFile as any,
+                firstMessage as any,
+                systemPrompt as any,
             );
             break;
-        case "gemini":
+        }
+        case "gemini": {
             await connectToGemini(
-                ws,
-                payload,
-                connectionPcmFile,
-                firstMessage,
-                systemPrompt,
+                ws as any,
+                payload as any,
+                connectionPcmFile as any,
+                firstMessage as any,
+                systemPrompt as any,
             );
             break;
-        case "elevenlabs":
+        }
+        case "elevenlabs": {
             const agentId = user.personality?.oai_voice ?? "";
-            
+
             if (!elevenLabsApiKey) {
                 throw new Error("ELEVENLABS_API_KEY environment variable is required");
             }
-            
+
             await connectToElevenLabs(
-                ws,
-                payload,
-                connectionPcmFile,
+                ws as any,
+                payload as any,
+                connectionPcmFile as any,
                 agentId,
                 elevenLabsApiKey,
             );
             break;
-        case "hume":
-            await connectToHume(ws, payload,
-                connectionPcmFile, firstMessage, systemPrompt, () => Promise.resolve());
-            break;
-        default:
+        }
+        default: {
             throw new Error(`Unknown provider: ${provider}`);
+        }
     }
 });
 
 server.on("upgrade", async (req, socket, head) => {
-    console.log('foobar upgrade', req.headers);
+    // Debug: incoming upgrade request
+    try {
+        // socket is a Duplex / net.Socket; cast to any to avoid strict type errors when accessing remoteAddress/remotePort
+        const s: any = socket;
+        const remoteAddr = (s && s.remoteAddress) ? `${s.remoteAddress}:${s.remotePort}` : 'unknown';
+        console.log(`[upgrade] incoming upgrade request from ${remoteAddr} url=${req.url} headLen=${head ? head.length : 0}`);
+        console.log('[upgrade] request headers:', req.headers);
+    } catch (e) {
+        console.log('[upgrade] debug print error', e);
+    }
     let user: IUser;
-    let supabase: SupabaseClient;
+    // getSupabaseClient may return differing SupabaseClient types depending on dependencies; use a relaxed type here for debugging logs
+    let supabase: any;
     let authToken: string;
     try {
         const { authorization: authHeader, "x-wifi-rssi": rssi } = req.headers;
         authToken = authHeader?.replace("Bearer ", "") ?? "";
         const wifiStrength = parseInt(rssi as string); // Convert to number
 
-        // You can now use wifiStrength in your code
-        console.log("WiFi RSSI:", wifiStrength); // Will log something like -50
+        // Debug print extracted values (non-functional)
+        console.log('[upgrade] authHeader present=', !!authHeader, ' authTokenLen=', (authToken || '').length);
+        console.log('[upgrade] x-wifi-rssi header=', rssi, ' parsed=', isNaN(wifiStrength) ? 'NaN' : wifiStrength);
 
-        // Remove debug logging
         if (!authToken) {
+            console.log('[upgrade] Missing Authorization header or token - rejecting upgrade (401)');
             socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
             socket.destroy();
             return;
@@ -130,13 +132,21 @@ server.on("upgrade", async (req, socket, head) => {
 
         supabase = getSupabaseClient(authToken as string);
         user = await authenticateUser(supabase, authToken as string);
-    } catch (_e: any) {
+        console.log('[upgrade] authenticateUser result user=', user ? (user.user_id ?? 'unknown') : 'null');
+    } catch (err: any) {
+        console.log('[upgrade] authentication error:', err && err.message ? err.message : err);
         socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
         socket.destroy();
         return;
     }
 
+    console.log('[upgrade] calling wss.handleUpgrade for user=', user ? (user.user_id ?? 'unknown') : 'unknown');
     wss.handleUpgrade(req, socket, head, (ws) => {
+        try {
+            console.log('[upgrade] handleUpgrade callback - emitting connection for user=', user ? (user.user_id ?? 'unknown') : 'unknown');
+        } catch (e) {
+            console.log('[upgrade] handleUpgrade callback debug error', e);
+        }
         wss.emit("connection", ws, {
             user,
             supabase,
