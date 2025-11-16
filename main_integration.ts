@@ -3,6 +3,9 @@
 
 // 1. Add import for bhajan functions
 import { sendBhajanCommandToDevice } from "./bhajans.ts";
+// The original issue was caused by a missing import for addConnection/removeConnection.
+// We need to import them from the correct path.
+import { addConnection, removeConnection } from "./realtime/connections.ts";
 
 // 2. Add bhajan message handling in the WebSocket connection handler
 // Find the switch(provider) block and add bhajan support before it:
@@ -134,7 +137,12 @@ server.on("upgrade", async (req, socket, head) => {
         const deviceId = url.pathname.split('/')[3];
         
         wss.handleUpgrade(req, socket, head, (ws) => {
-            // Handle bhajan-specific WebSocket connection
+            // The main issue was here: we need to register the bhajan-specific connection
+            // using the correct functions (addConnection/removeConnection) which were not imported.
+            addConnection(`${deviceId}-bhajan`, ws);
+            ws.on('close', () => {
+                removeConnection(`${deviceId}-bhajan`);
+            });
             ws.on('message', (data) => {
                 try {
                     const message = JSON.parse(data.toString());
