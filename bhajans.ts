@@ -1,4 +1,3 @@
-
 import { SupabaseClient } from "@supabase/supabase-js";
 import { sendToDevice } from "./realtime/connections.ts";
 
@@ -50,13 +49,11 @@ export async function getDeviceBhajanStatus(
 }
 
 
-// Play bhajan on device (updates DB)
-export async function playBhajanOnDevice(
+// Play bhajan on device (upexport async function playBhajanOnDevice(
     supabase: SupabaseClient,
     deviceId: string,
     bhajanId: number,
-): Promise<void> {
-    // Get bhajan details to ensure it exists
+): Promise<void> {t bhajan details to ensure it exists
     const { data: bhajan, error: bhajanError } = await supabase
         .from('bhajans')
         .select('id')
@@ -88,13 +85,11 @@ export async function playBhajanOnDevice(
         });
 }
 
-// Control bhajan playback (updates DB)
-export async function controlBhajanPlayback(
+// Control bhajan playback (updates Dexport async function controlBhajanPlayback(
     supabase: SupabaseClient,
     deviceId: string,
     action: 'play' | 'pause' | 'stop' | 'resume',
-): Promise<void> {
-    const { data: device, error: deviceError } = await supabase
+): Promise<void> {: device, error: deviceError } = await supabase
         .from('devices')
         .select('current_bhajan_status, selected_bhajan_id, bhajan_playback_started_at, current_bhajan_position')
         .eq('device_id', deviceId)
@@ -157,8 +152,7 @@ export async function controlBhajanPlayback(
 }
 
 
-// Set default bhajan for device
-export async function setDefaultBhajan(
+// Set defaulexport async function setDefaultBhajan(
     supabase: SupabaseClient,
     deviceId: string,
     bhajanId: number,
@@ -171,13 +165,11 @@ export async function setDefaultBhajan(
     if (updateError) throw new Error(`Failed to set default bhajan: ${updateError.message}`);
 }
 
-// Get playback history
-export async function getPlaybackHistory(
+// Get playback historyexport async function getPlaybackHistory(
     supabase: SupabaseClient,
     deviceId: string,
     limit = 50
-) {
-    const { data, error } = await supabase
+) {error } = await supabase
         .from('bhajan_playback_history_view') // Using a view to get bhajan names
         .select('*')
         .eq('device_id', deviceId)
