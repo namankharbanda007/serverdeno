@@ -1,163 +1,156 @@
-// Fixed server-deno main.ts for Deno Deploy compatibility
-import { Hono } from "https://deno.land/x/hono@v3.11.7/mod.ts";
-import { cors } from "https://deno.land/x/hono@v3.11.7/middleware.ts";
+import { createServer } from "node:http";
+import { WebSocketServer } from "npm:ws";
+import type {
+    WebSocket as WSWebSocket,
+    WebSocketServer as _WebSocketServer,
+} from "npm:@types/ws";
+import { authenticateUser, elevenLabsApiKey } from "./utils.ts";
+import {
+    createFirstMessage,
+    createSystemPrompt,
+    getChatHistory,
+    getSupabaseClient,
+} from "./supabase.ts";
+import { SupabaseClient } from "@supabase/supabase-js";
+import { isDev } from "./utils.ts";
+import { connectToOpenAI } from "./models/openai.ts";
+import { connectToGemini } from "./models/gemini.ts";
+import { connectToElevenLabs } from "./models/elevenlabs.ts";
+import { connectToHume } from "./models/hume.ts";
 
-const app = new Hono();
+const server = createServer();
 
-// Enable CORS for all origins (adjust for production)
-app.use("*", cors());
+const wss: _WebSocketServer = new WebSocketServer({ noServer: true,
+    perMessageDeflate: false,
+ });
 
-// Health check endpoint
-app.get("/health", (c) => c.json({ status: "ok", timestamp: new Date().toISOString() }));
-
-// Root endpoint
-app.get("/", (c) => c.text("Dev Vani Server is running!"));
-
-// Bhajan feature endpoints
-app.get("/api/bhajans", async (c) => {
-  try {
-    // Example bhajan data - in production, fetch from external source
-    const bhajans = [
-      {
-        id: 1,
-        title: "Om Jai Jagadish Hare",
-        artist: "Traditional",
-        duration: "5:30",
-        category: "Aarti"
-      },
-      {
-        id: 2,
-        title: "Hanuman Chalisa",
-        artist: "Traditional",
-        duration: "8:45",
-        category: "Stotra"
-      },
-      {
-        id: 3,
-        title: "Gayatri Mantra",
-        artist: "Traditional",
-        duration: "3:15",
-        category: "Mantra"
-      }
-    ];
-
-    return c.json({
-      success: true,
-      data: bhajans,
-      count: bhajans.length
-    });
-  } catch (error) {
-    console.error("Error fetching bhajans:", error);
-    return c.json({
-      success: false,
-      error: "Failed to fetch bhajans",
-      message: error.message
-    }, 500);
-  }
+wss.on('headers', (headers, req) => {
+    // You should NOT see any "Sec-WebSocket-Extensions" here
+    console.log('WS response headers :', headers);
 });
 
-// Get specific bhajan by ID
-app.get("/api/bhajans/:id", async (c) => {
-  try {
-    const id = parseInt(c.req.param("id"));
-    
-    // Example data - replace with actual database/API call
-    const bhajan = {
-      id: id,
-      title: "Om Namah Shivaya",
-      artist: "Traditional",
-      duration: "4:20",
-      category: "Mantra",
-      lyrics: "Om Namah Shivaya Om Namah Shivaya...",
-      audioUrl: "https://example.com/audio/om-namah-shivaya.mp3"
-    };
+wss.on("connection", async (ws: WSWebSocket, payload: IPayload) => {
+    const { user, supabase } = payload;
 
-    if (!bhajan) {
-      return c.json({
-        success: false,
-        error: "Bhajan not found"
-      }, 404);
+    let connectionPcmFile: Deno.FsFile | null = null;
+    if (isDev) {
+        const filename = `debug_audio_${Date.now()}.pcm`;
+        connectionPcmFile = await Deno.open(filename, {
+            create: true,
+            write: true,
+            append: true,
+        });
     }
 
-    return c.json({
-      success: true,
-      data: bhajan
-    });
-  } catch (error) {
-    console.error("Error fetching bhajan:", error);
-    return c.json({
-      success: false,
-      error: "Failed to fetch bhajan",
-      message: error.message
-    }, 500);
-  }
+    const chatHistory = await getChatHistory(
+        supabase,
+        user.user_id,
+        user.personality?.key ?? null,
+        false,
+    );
+    const firstMessage = createFirstMessage(payload);
+    const systemPrompt = createSystemPrompt(chatHistory, payload);
+
+    const provider = user.personality?.provider;
+
+    // send user details to client
+    // when DEV_MODE is true, we send the default values 100, false, false
+    ws.send(
+        JSON.stringify({
+            type: "auth",
+            volume_control: user.device?.volume ?? 20,
+            is_ota: user.device?.is_ota ?? false,
+            is_reset: user.device?.is_reset ?? false,
+            pitch_factor: user.personality?.pitch_factor ?? 1,
+        }),
+    );
+
+    switch (provider) {
+        case "openai":
+            await connectToOpenAI(
+                ws,
+                payload,
+                connectionPcmFile,
+                firstMessage,
+                systemPrompt,
+            );
+            break;
+        case "gemini":
+            await connectToGemini(
+                ws,
+                payload,
+                connectionPcmFile,
+                firstMessage,
+                systemPrompt,
+            );
+            break;
+        case "elevenlabs":
+            const agentId = user.personality?.oai_voice ?? "";
+            
+            if (!elevenLabsApiKey) {
+                throw new Error("ELEVENLABS_API_KEY environment variable is required");
+            }
+            
+            await connectToElevenLabs(
+                ws,
+                payload,
+                connectionPcmFile,
+                agentId,
+                elevenLabsApiKey,
+            );
+            break;
+        case "hume":
+            await connectToHume(ws, payload,
+                connectionPcmFile, firstMessage, systemPrompt, () => Promise.resolve());
+            break;
+        default:
+            throw new Error(`Unknown provider: ${provider}`);
+    }
 });
 
-// Search bhajans
-app.get("/api/bhajans/search", async (c) => {
-  try {
-    const query = c.req.query("q") || "";
-    const category = c.req.query("category") || "";
-    
-    // Example search logic - replace with actual search implementation
-    const allBhajans = [
-      { id: 1, title: "Om Jai Jagadish Hare", artist: "Traditional", category: "Aarti" },
-      { id: 2, title: "Hanuman Chalisa", artist: "Traditional", category: "Stotra" },
-      { id: 3, title: "Gayatri Mantra", artist: "Traditional", category: "Mantra" },
-      { id: 4, title: "Sai Bhajan", artist: "Traditional", category: "Aarti" }
-    ];
+server.on("upgrade", async (req, socket, head) => {
+    console.log('foobar upgrade', req.headers);
+    let user: IUser;
+    let supabase: SupabaseClient;
+    let authToken: string;
+    try {
+        const { authorization: authHeader, "x-wifi-rssi": rssi } = req.headers;
+        authToken = authHeader?.replace("Bearer ", "") ?? "";
+        const wifiStrength = parseInt(rssi as string); // Convert to number
 
-    let results = allBhajans;
+        // You can now use wifiStrength in your code
+        console.log("WiFi RSSI:", wifiStrength); // Will log something like -50
 
-    if (query) {
-      results = results.filter(bhajan => 
-        bhajan.title.toLowerCase().includes(query.toLowerCase()) ||
-        bhajan.artist.toLowerCase().includes(query.toLowerCase())
-      );
+        // Remove debug logging
+        if (!authToken) {
+            socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+            socket.destroy();
+            return;
+        }
+
+        supabase = getSupabaseClient(authToken as string);
+        user = await authenticateUser(supabase, authToken as string);
+    } catch (_e: any) {
+        socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+        socket.destroy();
+        return;
     }
 
-    if (category) {
-      results = results.filter(bhajan => 
-        bhajan.category.toLowerCase() === category.toLowerCase()
-      );
-    }
-
-    return c.json({
-      success: true,
-      data: results,
-      query,
-      category,
-      count: results.length
+    wss.handleUpgrade(req, socket, head, (ws) => {
+        wss.emit("connection", ws, {
+            user,
+            supabase,
+            timestamp: new Date().toISOString(),
+        });
     });
-  } catch (error) {
-    console.error("Error searching bhajans:", error);
-    return c.json({
-      success: false,
-      error: "Failed to search bhajans",
-      message: error.message
-    }, 500);
-  }
 });
 
-// Categories endpoint
-app.get("/api/categories", async (c) => {
-  try {
-    const categories = ["Aarti", "Stotra", "Mantra", "Kirtan", "Bhajan"];
-    
-    return c.json({
-      success: true,
-      data: categories
+if (isDev) { // deno run -A --env-file=.env main.ts
+    const HOST = Deno.env.get("HOST") || "0.0.0.0";
+    const PORT = Deno.env.get("PORT") || "8000";
+    server.listen(Number(PORT), HOST, () => {
+        console.log(`Audio capture server running on ws://${HOST}:${PORT}`);
     });
-  } catch (error) {
-    console.error("Error fetching categories:", error);
-    return c.json({
-      success: false,
-      error: "Failed to fetch categories",
-      message: error.message
-    }, 500);
-  }
-});
-
-// Export the Hono app for Deno Deploy
-// This is the key fix - don't use app.listen(), just export the app
-export default app;
+} else {
+    server.listen(8080);
+}
