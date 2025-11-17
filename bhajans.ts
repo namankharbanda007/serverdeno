@@ -1,3 +1,4 @@
+
 import { SupabaseClient } from "@supabase/supabase-js";
 import { sendToDevice } from "./realtime/connections.ts";
 
@@ -49,14 +50,16 @@ export async function getDeviceBhajanStatus(
 }
 
 
-// Play bhajan on device (upexport async function playBhajanOnDevice(
+// Play bhajan on device (updates DB)
+export async function playBhajanOnDevice(
     supabase: SupabaseClient,
     deviceId: string,
     bhajanId: number,
-): Promise<void> {t bhajan details to ensure it exists
+): Promise<void> {
+    // Get bhajan details to ensure it exists and to obtain name/url
     const { data: bhajan, error: bhajanError } = await supabase
         .from('bhajans')
-        .select('id')
+        .select('id, name, url')
         .eq('id', bhajanId)
         .single();
     if (bhajanError || !bhajan) throw new Error('Bhajan not found');
@@ -83,13 +86,22 @@ export async function getDeviceBhajanStatus(
             bhajan_id: bhajanId,
             event_type: 'play',
         });
+
+    // Send play command to device over WebSocket with name and url
+    try {
+        sendBhajanCommandToDevice(deviceId, 'play', bhajanId, bhajan.url, bhajan.name);
+    } catch (e) {
+        console.warn('Failed to send play command to device:', e);
+    }
 }
 
-// Control bhajan playback (updates Dexport async function controlBhajanPlayback(
+// Control bhajan playback (updates DB)
+export async function controlBhajanPlayback(
     supabase: SupabaseClient,
     deviceId: string,
     action: 'play' | 'pause' | 'stop' | 'resume',
-): Promise<void> {: device, error: deviceError } = await supabase
+): Promise<void> {
+    const { data: device, error: deviceError } = await supabase
         .from('devices')
         .select('current_bhajan_status, selected_bhajan_id, bhajan_playback_started_at, current_bhajan_position')
         .eq('device_id', deviceId)
@@ -149,10 +161,19 @@ export async function getDeviceBhajanStatus(
             duration_seconds: action === 'pause' || action === 'stop' ? position : undefined,
         });
     }
+
+    // Send control command to device (pause/stop/resume)
+    try {
+        // For control actions we send a bhajan_control message the firmware expects
+        sendBhajanCommandToDevice(deviceId, action);
+    } catch (e) {
+        console.warn('Failed to send control command to device:', e);
+    }
 }
 
 
-// Set defaulexport async function setDefaultBhajan(
+// Set default bhajan for device
+export async function setDefaultBhajan(
     supabase: SupabaseClient,
     deviceId: string,
     bhajanId: number,
@@ -165,11 +186,13 @@ export async function getDeviceBhajanStatus(
     if (updateError) throw new Error(`Failed to set default bhajan: ${updateError.message}`);
 }
 
-// Get playback historyexport async function getPlaybackHistory(
+// Get playback history
+export async function getPlaybackHistory(
     supabase: SupabaseClient,
     deviceId: string,
     limit = 50
-) {error } = await supabase
+) {
+    const { data, error } = await supabase
         .from('bhajan_playback_history_view') // Using a view to get bhajan names
         .select('*')
         .eq('device_id', deviceId)
@@ -185,20 +208,23 @@ export function sendBhajanCommandToDevice(
     deviceId: string,
     command: string,
     bhajanId?: number,
-    url?: string
+    url?: string,
+    name?: string
 ): boolean {
-    console.log(`Attempting to send command '${command}' to device ${deviceId}`);
-    const message: { type: string; command: string; timestamp: string; bhajan_id?: number; url?: string } = {
-        type: 'bhajan_command',
-        command: command,
-        timestamp: new Date().toISOString(),
-    };
+    console.log(`Attempting to send bhajan command '${command}' to device ${deviceId}`);
 
-    if (bhajanId) {
-        message.bhajan_id = bhajanId;
-    }
-    if (url) {
-        message.url = url;
+    // Build message according to firmware expectations
+    let message: any = { timestamp: new Date().toISOString() };
+
+    if (command === 'play') {
+        message.type = 'bhajan_play';
+        if (bhajanId) message.bhajan_id = bhajanId;
+        if (url) message.url = url;
+        if (name) message.name = name;
+    } else {
+        // pause / stop / resume actions
+        message.type = 'bhajan_control';
+        message.action = command;
     }
 
     // Try sending to the specific bhajan websocket first, then fallback to the main one
