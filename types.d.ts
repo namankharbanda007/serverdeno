@@ -15,6 +15,7 @@ declare global {
         user: IUser;
         supabase: SupabaseClient;
         timestamp: string;
+        deviceId?: string;
     }
 
     interface IDevice {
@@ -23,6 +24,8 @@ declare global {
         is_ota: boolean;
         is_reset: boolean;
         mac_address: string;
+        selected_bhajan_id?: number | null;
+        current_bhajan_status?: string;
         user_code: string;
     }
 
@@ -143,3 +146,4 @@ declare global {
         device?: IDevice;
     }
 }
+export type { IPayload, IUser };

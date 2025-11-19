@@ -140,7 +140,7 @@ async function handlePlayBhajan(
             );
         }
         
-        await playBhajanOnDevice(supabase, deviceId, bhajanId);
+        await playBhajanOnDevice(supabase, deviceId, bhajanId, userId);
         
         return new Response(
             JSON.stringify({ success: true, message: 'Bhajan started playing' }),
@@ -185,7 +185,7 @@ async function handleControlBhajan(
             );
         }
         
-        await controlBhajanPlayback(supabase, deviceId, action);
+        await controlBhajanPlayback(supabase, deviceId, action, userId);
         
         return new Response(
             JSON.stringify({ success: true, message: `Bhajan ${action} successful` }),
@@ -220,7 +220,7 @@ async function handleSetDefaultBhajan(
             );
         }
         
-        await setDefaultBhajan(supabase, deviceId, bhajanId);
+        await setDefaultBhajan(supabase, deviceId, bhajanId, userId);
         
         return new Response(
             JSON.stringify({ success: true, message: 'Default bhajan set successfully' }),
@@ -255,7 +255,7 @@ async function handleGetPlaybackHistory(
             );
         }
         
-        const history = await getPlaybackHistory(supabase, deviceId, limit);
+        const history = await getPlaybackHistory(supabase, deviceId, userId, limit);
         
         return new Response(
             JSON.stringify({ history }),

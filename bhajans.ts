@@ -227,18 +227,19 @@ export function sendBhajanCommandToDevice(
         message.action = command;
     }
 
-    // Try sending to the specific bhajan websocket first, then fallback to the main one
+    // Try sending to the specific bhajan websocket first
     const sentToBhajanSocket = sendToDevice(`${deviceId}-bhajan`, message);
     if (sentToBhajanSocket) {
         console.log(`Sent '${command}' to bhajan socket for ${deviceId}`);
-        return true;
     }
 
+    // AND send to the main device socket (this is the actual ESP32)
     const sentToMainSocket = sendToDevice(deviceId, message);
     if (sentToMainSocket) {
         console.log(`Sent '${command}' to main AI socket for ${deviceId}`);
     } else {
-        console.warn(`Device ${deviceId} not connected on any WebSocket.`);
+        console.warn(`Device ${deviceId} not connected on main WebSocket.`);
     }
-    return sentToMainSocket;
+
+    return sentToBhajanSocket || sentToMainSocket;
 }
