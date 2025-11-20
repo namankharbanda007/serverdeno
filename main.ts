@@ -16,7 +16,7 @@ import { isDev } from "./utils.ts";
 import { connectToOpenAI } from "./models/openai.ts";
 import { connectToGemini } from "./models/gemini.ts";
 import { connectToElevenLabs } from "./models/elevenlabs.ts";
-import { connectToHume } from "./models/hume.ts";
+
 // Bhajan imports
 import {
   playBhajanOnDevice,
