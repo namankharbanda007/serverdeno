@@ -1,167 +1,9 @@
-// Fixed server-deno main.ts for Deno Deploy compatibility
-import { Hono } from "https://deno.land/x/hono@v3.11.7/mod.ts";
-import { cors } from "https://deno.land/x/hono@v3.11.7/middleware.ts";
+// Deno Deploy compatible server using Node.js http + npm:ws (ElatoAI pattern)
+import { createServer } from "node:http";
+import { WebSocketServer } from "npm:ws@8.18.0";
+import type { WebSocket as WSWebSocket } from "npm:@types/ws@8.5.12";
 import { getSupabaseClient } from './supabase.ts';
 import { authenticateUser } from './utils.ts';
-import { addConnection, removeConnection } from './realtime/connections.ts';
-
-const app = new Hono();
-
-// Enable CORS for all origins (adjust for production)
-app.use("*", cors());
-
-// Health check endpoint
-app.get("/health", (c) => c.json({ status: "ok", timestamp: new Date().toISOString() }));
-
-// Root endpoint
-app.get("/", (c) => c.text("Dev Vani Server is running!"));
-
-// Bhajan feature endpoints
-app.get("/api/bhajans", async (c) => {
-  try {
-    // Example bhajan data - in production, fetch from external source
-    const bhajans = [
-      {
-        id: 1,
-        title: "Om Jai Jagadish Hare",
-        artist: "Traditional",
-        duration: "5:30",
-        category: "Aarti"
-      },
-      {
-        id: 2,
-        title: "Hanuman Chalisa",
-        artist: "Traditional",
-        duration: "8:45",
-        category: "Stotra"
-      },
-      {
-        id: 3,
-        title: "Gayatri Mantra",
-        artist: "Traditional",
-        duration: "3:15",
-        category: "Mantra"
-      }
-    ];
-
-    return c.json({
-      success: true,
-      data: bhajans,
-      count: bhajans.length
-    });
-  } catch (error) {
-    console.error("Error fetching bhajans:", error);
-    return c.json({
-      success: false,
-      error: "Failed to fetch bhajans",
-      message: error.message
-    }, 500);
-  }
-});
-
-// Get specific bhajan by ID
-app.get("/api/bhajans/:id", async (c) => {
-  try {
-    const id = parseInt(c.req.param("id"));
-
-    // Example data - replace with actual database/API call
-    const bhajan = {
-      id: id,
-      title: "Om Namah Shivaya",
-      artist: "Traditional",
-      duration: "4:20",
-      category: "Mantra",
-      lyrics: "Om Namah Shivaya Om Namah Shivaya...",
-      audioUrl: "https://example.com/audio/om-namah-shivaya.mp3"
-    };
-
-    if (!bhajan) {
-      return c.json({
-        success: false,
-        error: "Bhajan not found"
-      }, 404);
-    }
-
-    return c.json({
-      success: true,
-      data: bhajan
-    });
-  } catch (error) {
-    console.error("Error fetching bhajan:", error);
-    return c.json({
-      success: false,
-      error: "Failed to fetch bhajan",
-      message: error.message
-    }, 500);
-  }
-});
-
-// Search bhajans
-app.get("/api/bhajans/search", async (c) => {
-  try {
-    const query = c.req.query("q") || "";
-    const category = c.req.query("category") || "";
-
-    // Example search logic - replace with actual search implementation
-    const allBhajans = [
-      { id: 1, title: "Om Jai Jagadish Hare", artist: "Traditional", category: "Aarti" },
-      { id: 2, title: "Hanuman Chalisa", artist: "Traditional", category: "Stotra" },
-      { id: 3, title: "Gayatri Mantra", artist: "Traditional", category: "Mantra" },
-      { id: 4, title: "Sai Bhajan", artist: "Traditional", category: "Aarti" }
-    ];
-
-    let results = allBhajans;
-
-    if (query) {
-      results = results.filter(bhajan =>
-        bhajan.title.toLowerCase().includes(query.toLowerCase()) ||
-        bhajan.artist.toLowerCase().includes(query.toLowerCase())
-      );
-    }
-
-    if (category) {
-      results = results.filter(bhajan =>
-        bhajan.category.toLowerCase() === category.toLowerCase()
-      );
-    }
-
-    return c.json({
-      success: true,
-      data: results,
-      query,
-      category,
-      count: results.length
-    });
-  } catch (error) {
-    console.error("Error searching bhajans:", error);
-    return c.json({
-      success: false,
-      error: "Failed to search bhajans",
-      message: error.message
-    }, 500);
-  }
-});
-
-// Categories endpoint
-app.get("/api/categories", async (c) => {
-  try {
-    const categories = ["Aarti", "Stotra", "Mantra", "Kirtan", "Bhajan"];
-
-    return c.json({
-      success: true,
-      data: categories
-    });
-  } catch (error) {
-    console.error("Error fetching categories:", error);
-    return c.json({
-      success: false,
-      error: "Failed to fetch categories",
-      message: error.message
-    }, 500);
-  }
-});
-
-// Import bhajan functions
 import {
   playBhajanOnDevice,
   controlBhajanPlayback,
@@ -169,152 +11,235 @@ import {
   getDeviceBhajanStatus
 } from './bhajans.ts';
 
-// Play bhajan endpoint
-app.post("/api/bhajans/play", async (c) => {
+// Create HTTP server
+const server = createServer((req, res) => {
+  // Handle regular HTTP requests
+  const url = new URL(req.url || '/', `http://${req.headers.host}`);
+
+  // Health check
+  if (url.pathname === '/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'ok', timestamp: new Date().toISOString() }));
+    return;
+  }
+
+  // Bhajan API endpoints
+  if (url.pathname.startsWith('/api/bhajans')) {
+    handleBhajanAPI(req, res);
+    return;
+  }
+
+  // Root
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Dev Vani Server is running!');
+});
+
+// Create WebSocket server
+const wss = new WebSocketServer({
+  noServer: true,
+  perMessageDeflate: false  // CRITICAL for binary audio
+});
+
+// WebSocket upgrade handler
+server.on("upgrade", async (req, socket, head) => {
+  console.log('[WS] Upgrade request received');
+
   try {
-    const body = await c.req.json();
-    const { deviceId, bhajanId } = body;
+    // Extract auth token
+    const authHeader = req.headers['authorization'] || req.headers['Authorization'];
+    const token = authHeader?.replace('Bearer ', '') || '';
 
-    // Auth check (simplified)
-    const authHeader = c.req.header('Authorization');
-    const token = authHeader ? authHeader.replace('Bearer ', '') : '';
-    if (!token) return c.json({ error: 'Unauthorized' }, 401);
+    if (!token) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      socket.destroy();
+      return;
+    }
 
+    // Authenticate
     const supabase = getSupabaseClient(token);
+    const user = await authenticateUser(supabase, token);
 
-    await playBhajanOnDevice(supabase, deviceId, bhajanId);
+    // Get device ID
+    const { data: device } = await supabase
+      .from('devices')
+      .select('device_id, volume, is_ota, is_reset')
+      .eq('user_id', user.id)
+      .single();
 
-    return c.json({ success: true });
+    if (!device) {
+      socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+
+    console.log(`[WS] Authenticated device: ${device.device_id}`);
+
+    // Upgrade to WebSocket
+    wss.handleUpgrade(req, socket, head, (ws: WSWebSocket) => {
+      wss.emit('connection', ws, {
+        user,
+        supabase,
+        device,
+        timestamp: new Date().toISOString()
+      });
+    });
+
   } catch (error) {
-    console.error("Error playing bhajan:", error);
-    return c.json({ success: false, error: error.message }, 500);
+    console.error('[WS] Auth failed:', error);
+    socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+    socket.destroy();
   }
 });
 
-// Control bhajan endpoint
-app.post("/api/bhajans/control", async (c) => {
-  try {
-    const body = await c.req.json();
-    const { deviceId, action } = body;
+// WebSocket connection handler
+wss.on('connection', async (ws: WSWebSocket, payload: any) => {
+  const { user, supabase, device } = payload;
+  const deviceId = device.device_id;
 
-    const authHeader = c.req.header('Authorization');
-    const token = authHeader ? authHeader.replace('Bearer ', '') : '';
-    if (!token) return c.json({ error: 'Unauthorized' }, 401);
+  console.log(`[WS] Device ${deviceId} connected`);
 
-    const supabase = getSupabaseClient(token);
+  // Send auth/config message to ESP32
+  ws.send(JSON.stringify({
+    type: 'auth',
+    volume_control: device.volume ?? 20,
+    is_ota: device.is_ota ?? false,
+    is_reset: device.is_reset ?? false,
+    pitch_factor: 1.0
+  }));
 
-    await controlBhajanPlayback(supabase, deviceId, action);
-
-    return c.json({ success: true });
-  } catch (error) {
-    console.error("Error controlling bhajan:", error);
-    return c.json({ success: false, error: error.message }, 500);
-  }
-});
-
-// Set default bhajan endpoint
-app.post("/api/bhajans/default", async (c) => {
-  try {
-    const body = await c.req.json();
-    const { deviceId, bhajanId } = body;
-
-    const authHeader = c.req.header('Authorization');
-    const token = authHeader ? authHeader.replace('Bearer ', '') : '';
-    if (!token) return c.json({ error: 'Unauthorized' }, 401);
-
-    const supabase = getSupabaseClient(token);
-
-    await setDefaultBhajan(supabase, deviceId, bhajanId);
-
-    return c.json({ success: true });
-  } catch (error) {
-    console.error("Error setting default bhajan:", error);
-    return c.json({ success: false, error: error.message }, 500);
-  }
-});
-
-// Get device status endpoint
-app.get("/api/bhajans/status", async (c) => {
-  try {
-    const deviceId = c.req.query("deviceId");
-    if (!deviceId) return c.json({ error: "Device ID required" }, 400);
-
-    const authHeader = c.req.header('Authorization');
-    const token = authHeader ? authHeader.replace('Bearer ', '') : '';
-    if (!token) return c.json({ error: 'Unauthorized' }, 401);
-
-    const supabase = getSupabaseClient(token);
-    const status = await getDeviceBhajanStatus(supabase, deviceId);
-
-    return c.json({ success: true, status });
-  } catch (error) {
-    console.error("Error fetching status:", error);
-    return c.json({ success: false, error: error.message }, 500);
-  }
-});
-
-// Export the Hono app for Deno Deploy
-// This is the key fix - don't use app.listen(), just export the app
-export default app;
-
-// Deno Deploy compatible WebSocket endpoint for bhajan control
-// Route: /ws/device/:deviceId/bhajan
-app.get('/ws/device/:deviceId/bhajan', async (c) => {
-  const deviceId = c.req.param('deviceId');
-  const request = c.req;
-
-  // Simple auth: check Authorization header and validate user. If you have different auth flow, adapt.
-  const authHeader = request.headers.get('authorization') || '';
-  const token = authHeader.replace('Bearer ', '');
-
-  if (!token) {
-    return c.text('Unauthorized', 401);
-  }
-
-  try {
-    const supabase = getSupabaseClient(token);
-    await authenticateUser(supabase, token);
-  } catch (err) {
-    console.warn('WebSocket auth failed', err);
-    return c.text('Unauthorized', 401);
-  }
-
-  // Upgrade to WebSocket using WebSocketPair (supported in Deno Deploy)
-  const pair = new WebSocketPair();
-  const [client, server] = Object.values(pair);
-
-  // Accept the server side and register
-  try {
-    (server as any).accept?.();
-  } catch (e) {
-    // Some runtimes require server.accept(); ignore if not available
-  }
-
-  const connKey = `${deviceId}-bhajan`;
-  addConnection(connKey, server);
-  console.log(`Registered bhajan websocket for ${connKey}`);
-
-  server.onmessage = (evt: any) => {
+  // Handle incoming messages
+  ws.on('message', async (data: any, isBinary: boolean) => {
     try {
-      const data = typeof evt.data === 'string' ? evt.data : new TextDecoder().decode(evt.data);
-      const msg = JSON.parse(data);
-      if (msg && msg.type && msg.type.startsWith('bhajan')) {
-        console.log(`Received bhajan message from device ${connKey}:`, msg.type);
+      if (isBinary) {
+        // Binary audio data from ESP32
+        // TODO: Forward to OpenAI Realtime API
+        console.log(`[WS] Received binary audio data: ${data.length} bytes`);
+
+      } else {
+        // JSON messages
+        const message = JSON.parse(data.toString('utf-8'));
+        console.log(`[WS] Message from ${deviceId}:`, message.type || 'unknown');
+
+        // Handle different message types
+        if (message.type === 'bhajan_status') {
+          // Update database with bhajan status
+          await supabase
+            .from('devices')
+            .update({
+              current_bhajan_status: message.status,
+              current_bhajan_position: message.position,
+              bhajan_playback_started_at: message.status === 'playing' ? new Date().toISOString() : null
+            })
+            .eq('device_id', deviceId);
+        }
+        else if (message.type === 'instruction') {
+          // Handle instructions from ESP32 (e.g., end_of_speech, INTERRUPT)
+          console.log(`[WS] Instruction from ${deviceId}:`, message.msg);
+          // TODO: Forward to OpenAI Realtime API
+        }
       }
-    } catch (e) {
-      console.error('Error parsing ws message', e);
+    } catch (error) {
+      console.error('[WS] Error processing message:', error);
     }
-  };
+  });
 
-  server.onclose = () => {
-    try {
-      removeConnection(connKey);
-      console.log(`Bhajan websocket closed for ${connKey}`);
-    } catch (e) {
-      console.warn('Error removing connection', e);
+  ws.on('close', (code: number, reason: string) => {
+    console.log(`[WS] Device ${deviceId} disconnected: ${code} - ${reason}`);
+  });
+
+  ws.on('error', (error: any) => {
+    console.error(`[WS] Error for device ${deviceId}:`, error);
+  });
+});
+
+// Bhajan API handler (simplified)
+async function handleBhajanAPI(req: any, res: any) {
+  const url = new URL(req.url || '/', `http://${req.headers.host}`);
+  const path = url.pathname;
+
+  // Set CORS headers
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
+  try {
+    // Extract auth token
+    const authHeader = req.headers['authorization'] || req.headers['Authorization'];
+    const token = authHeader?.replace('Bearer ', '') || '';
+
+    if (!token) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Unauthorized' }));
+      return;
     }
-  };
 
-  // Return the client side to complete the upgrade
-  return new Response(null, { status: 101, webSocket: client as any });
+    const supabase = getSupabaseClient(token);
+
+    // Route to appropriate handler
+    if (path === '/api/bhajans' && req.method === 'GET') {
+      // Return list of bhajans
+      const bhajans = [
+        { id: 1, title: "Om Jai Jagadish Hare", artist: "Traditional", duration: "5:30" },
+        { id: 2, title: "Hanuman Chalisa", artist: "Traditional", duration: "8:45" },
+        { id: 3, title: "Gayatri Mantra", artist: "Traditional", duration: "3:15" }
+      ];
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, data: bhajans }));
+    }
+    else if (path === '/api/bhajans/play' && req.method === 'POST') {
+      let body = '';
+      req.on('data', (chunk: any) => body += chunk);
+      req.on('end', async () => {
+        const { deviceId, bhajanId } = JSON.parse(body);
+        await playBhajanOnDevice(supabase, deviceId, bhajanId);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true }));
+      });
+    }
+    else if (path === '/api/bhajans/control' && req.method === 'POST') {
+      let body = '';
+      req.on('data', (chunk: any) => body += chunk);
+      req.on('end', async () => {
+        const { deviceId, action } = JSON.parse(body);
+        await controlBhajanPlayback(supabase, deviceId, action);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true }));
+      });
+    }
+    else if (path === '/api/bhajans/status' && req.method === 'GET') {
+      const deviceId = url.searchParams.get('deviceId');
+      if (!deviceId) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Device ID required' }));
+        return;
+      }
+
+      const status = await getDeviceBhajanStatus(supabase, deviceId);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, status }));
+    }
+    else {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Not found' }));
+    }
+
+  } catch (error) {
+    console.error('[API] Error:', error);
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Internal server error' }));
+  }
+}
+
+// Start server
+const PORT = parseInt(Deno.env.get('PORT') || '8000');
+server.listen(PORT, () => {
+  console.log(`Server listening on port ${PORT}`);
+  console.log(`WebSocket ready for connections`);
 });
