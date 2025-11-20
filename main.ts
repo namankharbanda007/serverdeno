@@ -16,40 +16,11 @@ import { isDev } from "./utils.ts";
 import { connectToOpenAI } from "./models/openai.ts";
 import { connectToGemini } from "./models/gemini.ts";
 import { connectToElevenLabs } from "./models/elevenlabs.ts";
+import { connectToHume } from "./models/hume.ts";
+import { sendBhajanCommandToDevice } from "./bhajans.ts";
+import { addConnection, removeConnection } from "./realtime/connections.ts";
 
-// Bhajan imports
-import {
-  playBhajanOnDevice,
-  controlBhajanPlayback,
-  setDefaultBhajan,
-  getDeviceBhajanStatus
-} from './bhajans.ts';
-
-const server = createServer((req, res) => {
-  // CRITICAL: Skip WebSocket upgrade requests - let them go to 'upgrade' event handler
-  if (req.headers.upgrade?.toLowerCase() === 'websocket') {
-    return;
-  }
-
-  // Handle Bhajan API HTTP requests
-  const url = new URL(req.url || '/', `http://${req.headers.host}`);
-
-  if (url.pathname.startsWith('/api/bhajans')) {
-    handleBhajanAPI(req, res);
-    return;
-  }
-
-  // Health check
-  if (url.pathname === '/health') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok', timestamp: new Date().toISOString() }));
-    return;
-  }
-
-  // Default response
-  res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('Dev Vani Server');
-});
+const server = createServer();
 
 const wss: _WebSocketServer = new WebSocketServer({
   noServer: true,
@@ -94,8 +65,19 @@ wss.on("connection", async (ws: WSWebSocket, payload: IPayload) => {
       is_ota: user.device?.is_ota ?? false,
       is_reset: user.device?.is_reset ?? false,
       pitch_factor: user.personality?.pitch_factor ?? 1,
+      selected_bhajan_id: user.device?.selected_bhajan_id ?? null,
+      current_bhajan_status: user.device?.current_bhajan_status ?? 'stopped',
     }),
   );
+
+  const sendBhajanStatus = (status: any) => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        type: "bhajan_status",
+        ...status
+      }));
+    }
+  };
 
   switch (provider) {
     case "openai":
@@ -168,97 +150,55 @@ server.on("upgrade", async (req, socket, head) => {
     return;
   }
 
-  wss.handleUpgrade(req, socket, head, (ws) => {
-    wss.emit("connection", ws, {
-      user,
-      supabase,
-      timestamp: new Date().toISOString(),
-    });
-  });
-});
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  if (url.pathname.startsWith('/ws/device/') && url.pathname.includes('/bhajan')) {
+    // Handle bhajan WebSocket connections
+    const deviceId = url.pathname.split('/')[3];
 
-// Bhajan API handler
-async function handleBhajanAPI(req: any, res: any) {
-  const url = new URL(req.url || '/', `http://${req.headers.host}`);
-  const path = url.pathname;
-
-  // Set CORS headers
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204);
-    res.end();
-    return;
-  }
-
-  try {
-    const authHeader = req.headers['authorization'] || req.headers['Authorization'];
-    const token = authHeader?.replace('Bearer ', '') || '';
-
-    if (!token) {
-      res.writeHead(401, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Unauthorized' }));
-      return;
-    }
-
-    const supabase = getSupabaseClient(token);
-
-    // Route to appropriate handler
-    if (path === '/api/bhajans' && req.method === 'GET') {
-      const bhajans = [
-        { id: 1, title: "Om Jai Jagadish Hare", artist: "Traditional", duration: "5:30" },
-        { id: 2, title: "Hanuman Chalisa", artist: "Traditional", duration: "8:45" },
-        { id: 3, title: "Gayatri Mantra", artist: "Traditional", duration: "3:15" }
-      ];
-
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ success: true, data: bhajans }));
-    }
-    else if (path === '/api/bhajans/play' && req.method === 'POST') {
-      let body = '';
-      req.on('data', (chunk: any) => body += chunk);
-      req.on('end', async () => {
-        const { deviceId, bhajanId } = JSON.parse(body);
-        await playBhajanOnDevice(supabase, deviceId, bhajanId);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true }));
-      });
-    }
-    else if (path === '/api/bhajans/control' && req.method === 'POST') {
-      let body = '';
-      req.on('data', (chunk: any) => body += chunk);
-      req.on('end', async () => {
-        const { deviceId, action } = JSON.parse(body);
-        await controlBhajanPlayback(supabase, deviceId, action);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true }));
-      });
-    }
-    else if (path === '/api/bhajans/status' && req.method === 'GET') {
-      const deviceId = url.searchParams.get('deviceId');
-      if (!deviceId) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Device ID required' }));
-        return;
+    wss.handleUpgrade(req, socket, head, (ws: WSWebSocket) => {
+      // Register this ws under a bhajan-specific key so server can target it
+      const connKey = `${deviceId}-bhajan`;
+      try {
+        addConnection(connKey, ws as any);
+        console.log(`Registered bhajan websocket for ${connKey}`);
+      } catch (e) {
+        console.warn('Failed to add connection to map:', e);
       }
 
-      const status = await getDeviceBhajanStatus(supabase, deviceId);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ success: true, status }));
-    }
-    else {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Not found' }));
-    }
+      ws.on('message', (data: any) => {
+        try {
+          const message = JSON.parse(data.toString());
+          // Accept forwarded bhajan commands from other parts of the system
+          if (message.type === 'bhajan_play') {
+            // Device is informing server or other peers; handle if needed
+            // (No-op for now)
+          } else if (message.type === 'bhajan_control') {
+            // No-op server-side; device control comes from server
+          }
+        } catch (error) {
+          console.error('Error handling bhajan incoming message:', error);
+        }
+      });
 
-  } catch (error) {
-    console.error('[API] Error:', error);
-    res.writeHead(500, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Internal server error' }));
+      ws.on('close', () => {
+        try {
+          removeConnection(connKey);
+          console.log(`Removed bhajan websocket for ${connKey}`);
+        } catch (e) {
+          console.warn('Failed to remove connection:', e);
+        }
+      });
+    });
+  } else {
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      wss.emit("connection", ws, {
+        user,
+        supabase,
+        timestamp: new Date().toISOString(),
+      });
+    });
   }
-}
+});
 
 if (isDev) { // deno run -A --env-file=.env main.ts
   const HOST = Deno.env.get("HOST") || "0.0.0.0";
