@@ -1,9 +1,21 @@
-// Deno Deploy compatible server using Node.js http + npm:ws (ElatoAI pattern)
+// Server-deno main.ts - Full AI Provider Integration (OpenAI, Gemini, ElevenLabs)
 import { createServer } from "node:http";
-import { WebSocketServer } from "npm:ws@8.18.0";
-import type { WebSocket as WSWebSocket } from "npm:@types/ws@8.5.12";
-import { getSupabaseClient } from './supabase.ts';
-import { authenticateUser } from './utils.ts';
+import { WebSocketServer } from "npm:ws";
+import type {
+  WebSocket as WSWebSocket,
+  WebSocketServer as _WebSocketServer,
+} from "npm:@types/ws";
+import { authenticateUser, elevenLabsApiKey, isDev } from "./utils.ts";
+import {
+  createFirstMessage,
+  createSystemPrompt,
+  getChatHistory,
+  getSupabaseClient,
+} from "./supabase.ts";
+import { SupabaseClient } from "@supabase/supabase-js";
+import { connectToOpenAI } from "./models/openai.ts";
+import { connectToGemini } from "./models/gemini.ts";
+import { connectToElevenLabs } from "./models/elevenlabs.ts";
 import {
   playBhajanOnDevice,
   controlBhajanPlayback,
@@ -13,7 +25,7 @@ import {
 
 // Create HTTP server
 const server = createServer((req, res) => {
-  // Handle regular HTTP requests
+  // Handle regular HTTP requests (for Bhajan API)
   const url = new URL(req.url || '/', `http://${req.headers.host}`);
 
   // Health check
@@ -35,124 +47,131 @@ const server = createServer((req, res) => {
 });
 
 // Create WebSocket server
-const wss = new WebSocketServer({
+const wss: _WebSocketServer = new WebSocketServer({
   noServer: true,
-  perMessageDeflate: false  // CRITICAL for binary audio
+  perMessageDeflate: false,  // CRITICAL for binary audio
 });
 
-// WebSocket upgrade handler
-server.on("upgrade", async (req, socket, head) => {
-  console.log('[WS] Upgrade request received');
-
-  try {
-    // Extract auth token
-    const authHeader = req.headers['authorization'] || req.headers['Authorization'];
-    const token = authHeader?.replace('Bearer ', '') || '';
-
-    if (!token) {
-      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-      socket.destroy();
-      return;
-    }
-
-    // Authenticate
-    const supabase = getSupabaseClient(token);
-    const user = await authenticateUser(supabase, token);
-
-    // Get device ID
-    const { data: device } = await supabase
-      .from('devices')
-      .select('device_id, volume, is_ota, is_reset')
-      .eq('user_id', user.id)
-      .single();
-
-    if (!device) {
-      socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
-      socket.destroy();
-      return;
-    }
-
-    console.log(`[WS] Authenticated device: ${device.device_id}`);
-
-    // Upgrade to WebSocket
-    wss.handleUpgrade(req, socket, head, (ws: WSWebSocket) => {
-      wss.emit('connection', ws, {
-        user,
-        supabase,
-        device,
-        timestamp: new Date().toISOString()
-      });
-    });
-
-  } catch (error) {
-    console.error('[WS] Auth failed:', error);
-    socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-    socket.destroy();
-  }
+wss.on('headers', (headers, req) => {
+  // You should NOT see any "Sec-WebSocket-Extensions" here
+  console.log('WS response headers:', headers);
 });
 
 // WebSocket connection handler
-wss.on('connection', async (ws: WSWebSocket, payload: any) => {
-  const { user, supabase, device } = payload;
-  const deviceId = device.device_id;
+wss.on("connection", async (ws: WSWebSocket, payload: IPayload) => {
+  const { user, supabase } = payload;
 
-  console.log(`[WS] Device ${deviceId} connected`);
+  let connectionPcmFile: Deno.FsFile | null = null;
+  if (isDev) {
+    const filename = `debug_audio_${Date.now()}.pcm`;
+    connectionPcmFile = await Deno.open(filename, {
+      create: true,
+      write: true,
+      append: true,
+    });
+  }
 
-  // Send auth/config message to ESP32
-  ws.send(JSON.stringify({
-    type: 'auth',
-    volume_control: device.volume ?? 20,
-    is_ota: device.is_ota ?? false,
-    is_reset: device.is_reset ?? false,
-    pitch_factor: 1.0
-  }));
+  const chatHistory = await getChatHistory(
+    supabase,
+    user.user_id,
+    user.personality?.key ?? null,
+    false,
+  );
+  const firstMessage = createFirstMessage(payload);
+  const systemPrompt = createSystemPrompt(chatHistory, payload);
 
-  // Handle incoming messages
-  ws.on('message', async (data: any, isBinary: boolean) => {
-    try {
-      if (isBinary) {
-        // Binary audio data from ESP32
-        // TODO: Forward to OpenAI Realtime API
-        console.log(`[WS] Received binary audio data: ${data.length} bytes`);
+  const provider = user.personality?.provider;
 
-      } else {
-        // JSON messages
-        const message = JSON.parse(data.toString('utf-8'));
-        console.log(`[WS] Message from ${deviceId}:`, message.type || 'unknown');
+  // Send user details to client
+  ws.send(
+    JSON.stringify({
+      type: "auth",
+      volume_control: user.device?.volume ?? 20,
+      is_ota: user.device?.is_ota ?? false,
+      is_reset: user.device?.is_reset ?? false,
+      pitch_factor: user.personality?.pitch_factor ?? 1,
+    }),
+  );
 
-        // Handle different message types
-        if (message.type === 'bhajan_status') {
-          // Update database with bhajan status
-          await supabase
-            .from('devices')
-            .update({
-              current_bhajan_status: message.status,
-              current_bhajan_position: message.position,
-              bhajan_playback_started_at: message.status === 'playing' ? new Date().toISOString() : null
-            })
-            .eq('device_id', deviceId);
-        }
-        else if (message.type === 'instruction') {
-          // Handle instructions from ESP32 (e.g., end_of_speech, INTERRUPT)
-          console.log(`[WS] Instruction from ${deviceId}:`, message.msg);
-          // TODO: Forward to OpenAI Realtime API
-        }
+  // Route to appropriate AI provider
+  switch (provider) {
+    case "openai":
+      await connectToOpenAI(
+        ws,
+        payload,
+        connectionPcmFile,
+        firstMessage,
+        systemPrompt,
+      );
+      break;
+    case "gemini":
+      await connectToGemini(
+        ws,
+        payload,
+        connectionPcmFile,
+        firstMessage,
+        systemPrompt,
+      );
+      break;
+    case "elevenlabs":
+      const agentId = user.personality?.oai_voice ?? "";
+
+      if (!elevenLabsApiKey) {
+        throw new Error("ELEVENLABS_API_KEY environment variable is required");
       }
-    } catch (error) {
-      console.error('[WS] Error processing message:', error);
+
+      await connectToElevenLabs(
+        ws,
+        payload,
+        connectionPcmFile,
+        agentId,
+        elevenLabsApiKey,
+      );
+      break;
+    default:
+      throw new Error(`Unknown provider: ${provider}`);
+  }
+});
+
+// HTTP upgrade handler for WebSocket connections
+server.on("upgrade", async (req, socket, head) => {
+  console.log('WebSocket upgrade request', req.headers);
+  let user: IUser;
+  let supabase: SupabaseClient;
+  let authToken: string;
+
+  try {
+    const { authorization: authHeader, "x-wifi-rssi": rssi } = req.headers;
+    authToken = authHeader?.replace("Bearer ", "") ?? "";
+    const wifiStrength = parseInt(rssi as string);
+
+    console.log("WiFi RSSI:", wifiStrength);
+
+    if (!authToken) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+      socket.destroy();
+      return;
     }
-  });
 
-  ws.on('close', (code: number, reason: string) => {
-    console.log(`[WS] Device ${deviceId} disconnected: ${code} - ${reason}`);
-  });
+    supabase = getSupabaseClient(authToken as string);
+    user = await authenticateUser(supabase, authToken as string);
+  } catch (_e: any) {
+    console.error("Authentication failed:", _e);
+    socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+    socket.destroy();
+    return;
+  }
 
-  ws.on('error', (error: any) => {
-    console.error(`[WS] Error for device ${deviceId}:`, error);
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    wss.emit("connection", ws, {
+      user,
+      supabase,
+      timestamp: new Date().toISOString(),
+    });
   });
 });
 
-// Bhajan API handler (simplified)
+// Bhajan API handler
 async function handleBhajanAPI(req: any, res: any) {
   const url = new URL(req.url || '/', `http://${req.headers.host}`);
   const path = url.pathname;
@@ -169,7 +188,6 @@ async function handleBhajanAPI(req: any, res: any) {
   }
 
   try {
-    // Extract auth token
     const authHeader = req.headers['authorization'] || req.headers['Authorization'];
     const token = authHeader?.replace('Bearer ', '') || '';
 
@@ -183,7 +201,6 @@ async function handleBhajanAPI(req: any, res: any) {
 
     // Route to appropriate handler
     if (path === '/api/bhajans' && req.method === 'GET') {
-      // Return list of bhajans
       const bhajans = [
         { id: 1, title: "Om Jai Jagadish Hare", artist: "Traditional", duration: "5:30" },
         { id: 2, title: "Hanuman Chalisa", artist: "Traditional", duration: "8:45" },
@@ -238,8 +255,16 @@ async function handleBhajanAPI(req: any, res: any) {
 }
 
 // Start server
-const PORT = parseInt(Deno.env.get('PORT') || '8000');
-server.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
-  console.log(`WebSocket ready for connections`);
-});
+if (isDev) {
+  // Local development: deno run -A --env-file=.env main.ts
+  const HOST = Deno.env.get("HOST") || "0.0.0.0";
+  const PORT = Deno.env.get("PORT") || "8000";
+  server.listen(Number(PORT), HOST, () => {
+    console.log(`Audio capture server running on ws://${HOST}:${PORT}`);
+  });
+} else {
+  // Production (Deno Deploy)
+  server.listen(8080, () => {
+    console.log('Server running on port 8080');
+  });
+}
