@@ -80,13 +80,17 @@ export const connectToGemini = async (
 						type: "server",
 						msg: "RESPONSE.CREATED",
 					}));
-					// Don't exit yet - we need to collect all audio data
-				}
-
-				if (message.serverContent.turnComplete) {
-					// NOW we can exit - turn is complete
 					done = true;
 				}
+
+				// if (message.serverContent.turnComplete) {
+				// 	ws.send(
+				// 		JSON.stringify({
+				// 			type: "server",
+				// 			msg: "AUDIO.COMMITTED",
+				// 		}),
+				// 	);
+				// }
 			}
 		}
 		return turns;

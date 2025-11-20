@@ -1,11 +1,10 @@
-// Server-deno main.ts - Full AI Provider Integration (OpenAI, Gemini, ElevenLabs)
 import { createServer } from "node:http";
 import { WebSocketServer } from "npm:ws";
 import type {
   WebSocket as WSWebSocket,
   WebSocketServer as _WebSocketServer,
 } from "npm:@types/ws";
-import { authenticateUser, elevenLabsApiKey, isDev } from "./utils.ts";
+import { authenticateUser, elevenLabsApiKey } from "./utils.ts";
 import {
   createFirstMessage,
   createSystemPrompt,
@@ -13,9 +12,12 @@ import {
   getSupabaseClient,
 } from "./supabase.ts";
 import { SupabaseClient } from "@supabase/supabase-js";
+import { isDev } from "./utils.ts";
 import { connectToOpenAI } from "./models/openai.ts";
 import { connectToGemini } from "./models/gemini.ts";
 import { connectToElevenLabs } from "./models/elevenlabs.ts";
+import { connectToHume } from "./models/hume.ts";
+// Bhajan imports
 import {
   playBhajanOnDevice,
   controlBhajanPlayback,
@@ -23,15 +25,19 @@ import {
   getDeviceBhajanStatus
 } from './bhajans.ts';
 
-// Create HTTP server
 const server = createServer((req, res) => {
   // CRITICAL: Skip WebSocket upgrade requests - let them go to 'upgrade' event handler
   if (req.headers.upgrade?.toLowerCase() === 'websocket') {
     return;
   }
 
-  // Handle regular HTTP requests (for Bhajan API)
+  // Handle Bhajan API HTTP requests
   const url = new URL(req.url || '/', `http://${req.headers.host}`);
+
+  if (url.pathname.startsWith('/api/bhajans')) {
+    handleBhajanAPI(req, res);
+    return;
+  }
 
   // Health check
   if (url.pathname === '/health') {
@@ -40,29 +46,21 @@ const server = createServer((req, res) => {
     return;
   }
 
-  // Bhajan API endpoints
-  if (url.pathname.startsWith('/api/bhajans')) {
-    handleBhajanAPI(req, res);
-    return;
-  }
-
-  // Root
+  // Default response
   res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('Dev Vani Server is running!');
+  res.end('Dev Vani Server');
 });
 
-// Create WebSocket server
 const wss: _WebSocketServer = new WebSocketServer({
   noServer: true,
-  perMessageDeflate: false,  // CRITICAL for binary audio
+  perMessageDeflate: false,
 });
 
 wss.on('headers', (headers, req) => {
   // You should NOT see any "Sec-WebSocket-Extensions" here
-  console.log('WS response headers:', headers);
+  console.log('WS response headers :', headers);
 });
 
-// WebSocket connection handler
 wss.on("connection", async (ws: WSWebSocket, payload: IPayload) => {
   const { user, supabase } = payload;
 
@@ -87,7 +85,8 @@ wss.on("connection", async (ws: WSWebSocket, payload: IPayload) => {
 
   const provider = user.personality?.provider;
 
-  // Send user details to client
+  // send user details to client
+  // when DEV_MODE is true, we send the default values 100, false, false
   ws.send(
     JSON.stringify({
       type: "auth",
@@ -98,7 +97,6 @@ wss.on("connection", async (ws: WSWebSocket, payload: IPayload) => {
     }),
   );
 
-  // Route to appropriate AI provider
   switch (provider) {
     case "openai":
       await connectToOpenAI(
@@ -133,25 +131,29 @@ wss.on("connection", async (ws: WSWebSocket, payload: IPayload) => {
         elevenLabsApiKey,
       );
       break;
+    case "hume":
+      await connectToHume(ws, payload,
+        connectionPcmFile, firstMessage, systemPrompt, () => Promise.resolve());
+      break;
     default:
       throw new Error(`Unknown provider: ${provider}`);
   }
 });
 
-// HTTP upgrade handler for WebSocket connections
 server.on("upgrade", async (req, socket, head) => {
-  console.log('WebSocket upgrade request', req.headers);
+  console.log('foobar upgrade', req.headers);
   let user: IUser;
   let supabase: SupabaseClient;
   let authToken: string;
-
   try {
     const { authorization: authHeader, "x-wifi-rssi": rssi } = req.headers;
     authToken = authHeader?.replace("Bearer ", "") ?? "";
-    const wifiStrength = parseInt(rssi as string);
+    const wifiStrength = parseInt(rssi as string); // Convert to number
 
-    console.log("WiFi RSSI:", wifiStrength);
+    // You can now use wifiStrength in your code
+    console.log("WiFi RSSI:", wifiStrength); // Will log something like -50
 
+    // Remove debug logging
     if (!authToken) {
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
       socket.destroy();
@@ -161,7 +163,6 @@ server.on("upgrade", async (req, socket, head) => {
     supabase = getSupabaseClient(authToken as string);
     user = await authenticateUser(supabase, authToken as string);
   } catch (_e: any) {
-    console.error("Authentication failed:", _e);
     socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
     socket.destroy();
     return;
@@ -259,17 +260,12 @@ async function handleBhajanAPI(req: any, res: any) {
   }
 }
 
-// Start server
-if (isDev) {
-  // Local development: deno run -A --env-file=.env main.ts
+if (isDev) { // deno run -A --env-file=.env main.ts
   const HOST = Deno.env.get("HOST") || "0.0.0.0";
   const PORT = Deno.env.get("PORT") || "8000";
   server.listen(Number(PORT), HOST, () => {
     console.log(`Audio capture server running on ws://${HOST}:${PORT}`);
   });
 } else {
-  // Production (Deno Deploy)
-  server.listen(8080, () => {
-    console.log('Server running on port 8080');
-  });
+  server.listen(8080);
 }
