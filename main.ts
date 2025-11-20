@@ -25,6 +25,11 @@ import {
 
 // Create HTTP server
 const server = createServer((req, res) => {
+  // CRITICAL: Skip WebSocket upgrade requests - let them go to 'upgrade' event handler
+  if (req.headers.upgrade?.toLowerCase() === 'websocket') {
+    return;
+  }
+
   // Handle regular HTTP requests (for Bhajan API)
   const url = new URL(req.url || '/', `http://${req.headers.host}`);
 
