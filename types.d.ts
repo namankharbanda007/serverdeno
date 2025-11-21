@@ -15,7 +15,6 @@ declare global {
         user: IUser;
         supabase: SupabaseClient;
         timestamp: string;
-        deviceId?: string;
     }
 
     interface IDevice {
@@ -24,12 +23,10 @@ declare global {
         is_ota: boolean;
         is_reset: boolean;
         mac_address: string;
-        selected_bhajan_id?: number | null;
-        current_bhajan_status?: string;
         user_code: string;
     }
 
-    type ModelProvider = "openai" | "gemini" | "elevenlabs";
+    type ModelProvider = "openai" | "gemini" | "elevenlabs" | "hume";
 
     type GeminiVoice =
         | "Zephyr"
@@ -145,5 +142,54 @@ declare global {
         device_id: string;
         device?: IDevice;
     }
+
+    // Hume EVI WebSocket message types
+    interface HumeMessage {
+        type: string;
+        [key: string]: any;
+    }
+
+    interface HumeAudioInput {
+        type: 'audio_input';
+        data: string; // base64 encoded audio
+    }
+
+    interface HumeUserInput {
+        type: 'user_input';
+        text: string;
+    }
+
+    interface HumeAssistantInput {
+        type: 'assistant_input';
+        text: string;
+    }
+
+    interface HumeSessionSettings {
+        type: 'session_settings';
+        [key: string]: any;
+    }
+
+    interface HumeAssistantMessage {
+        type: 'assistant_message';
+        message: {
+            role: 'assistant';
+            content: string;
+        };
+        models: {
+            prosody?: {
+                scores: Record<string, number>;
+            };
+        };
+    }
+
+    interface HumeAudioOutput {
+        type: 'audio_output';
+        data: string; // base64 encoded audio
+    }
+
+    interface HumeError {
+        type: 'error';
+        code: string;
+        message: string;
+    }
 }
-export type { IPayload, IUser };

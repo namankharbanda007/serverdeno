@@ -111,7 +111,7 @@ export const connectToGemini = async (
 								buffer.buffer,
 								buffer.byteOffset,
 								buffer.byteLength /
-								Int16Array.BYTES_PER_ELEMENT,
+									Int16Array.BYTES_PER_ELEMENT,
 							);
 							return acc.concat(Array.from(intArray));
 						}
