@@ -20,9 +20,10 @@ import { connectToHume } from "./models/hume.ts";
 
 const server = createServer();
 
-const wss: _WebSocketServer = new WebSocketServer({ noServer: true,
+const wss: _WebSocketServer = new WebSocketServer({
+    noServer: true,
     perMessageDeflate: false,
- });
+});
 
 wss.on('headers', (headers, req) => {
     // You should NOT see any "Sec-WebSocket-Extensions" here
@@ -86,11 +87,11 @@ wss.on("connection", async (ws: WSWebSocket, payload: IPayload) => {
             break;
         case "elevenlabs":
             const agentId = user.personality?.oai_voice ?? "";
-            
+
             if (!elevenLabsApiKey) {
                 throw new Error("ELEVENLABS_API_KEY environment variable is required");
             }
-            
+
             await connectToElevenLabs(
                 ws,
                 payload,
@@ -106,6 +107,43 @@ wss.on("connection", async (ws: WSWebSocket, payload: IPayload) => {
         default:
             throw new Error(`Unknown provider: ${provider}`);
     }
+
+    ws.on("message", async (message) => {
+        try {
+            const data = JSON.parse(message.toString());
+            if (data.type === "action" && data.command === "play_bhajan") {
+                console.log("Received play_bhajan command");
+
+                ws.send(JSON.stringify({
+                    type: "server",
+                    msg: "Playing Bhajan..."
+                }));
+
+                try {
+                    const audioData = await Deno.readFile("./ॐ-ग-गणपतय-नम-नम-Om-Gan-Ganpataye-Namo-Namah-गणश-मतर.opus");
+                    const chunkSize = 1024; // Send in 1KB chunks
+
+                    // Send audio in chunks
+                    for (let i = 0; i < audioData.length; i += chunkSize) {
+                        const chunk = audioData.subarray(i, i + chunkSize);
+                        ws.send(chunk);
+                        // Small delay to prevent flooding the network/buffer
+                        await new Promise(resolve => setTimeout(resolve, 10));
+                    }
+
+                    console.log("Finished streaming Bhajan");
+                } catch (err) {
+                    console.error("Error playing bhajan:", err);
+                    ws.send(JSON.stringify({
+                        type: "server",
+                        msg: "Error playing audio file"
+                    }));
+                }
+            }
+        } catch (e) {
+            // Ignore non-JSON messages or errors
+        }
+    });
 });
 
 server.on("upgrade", async (req, socket, head) => {
