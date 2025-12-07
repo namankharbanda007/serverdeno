@@ -120,18 +120,25 @@ wss.on("connection", async (ws: WSWebSocket, payload: IPayload) => {
                 }));
 
                 try {
+                    console.log("Reading file: ./bhajan.opus");
                     const audioData = await Deno.readFile("./bhajan.opus");
+                    console.log(`File read successfully. Size: ${audioData.length} bytes`);
+
                     const chunkSize = 1024; // Send in 1KB chunks
+                    let chunksSent = 0;
 
                     // Send audio in chunks
                     for (let i = 0; i < audioData.length; i += chunkSize) {
                         const chunk = audioData.subarray(i, i + chunkSize);
                         ws.send(chunk);
+                        chunksSent++;
+                        if (chunksSent % 100 === 0) console.log(`Sent ${chunksSent} chunks...`);
+
                         // Small delay to prevent flooding the network/buffer
                         await new Promise(resolve => setTimeout(resolve, 10));
                     }
 
-                    console.log("Finished streaming Bhajan");
+                    console.log(`Finished streaming Bhajan. Total chunks: ${chunksSent}`);
                 } catch (err) {
                     console.error("Error playing bhajan:", err);
                     ws.send(JSON.stringify({
