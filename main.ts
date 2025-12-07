@@ -120,9 +120,13 @@ wss.on("connection", async (ws: WSWebSocket, payload: IPayload) => {
                 }));
 
                 try {
-                    console.log("Reading file: ./bhajan.opus");
-                    const audioData = await Deno.readFile("./bhajan.opus");
-                    console.log(`File read successfully. Size: ${audioData.length} bytes`);
+                    console.log("Reading file: ./GayatriMantra_G711.org_.wav");
+                    const fileData = await Deno.readFile("./GayatriMantra_G711.org_.wav");
+                    console.log(`File read successfully. Size: ${fileData.length} bytes`);
+
+                    // Skip the 44-byte WAV header to get raw PCM
+                    const audioData = fileData.subarray(44);
+                    console.log(`Skipped header. Audio data size: ${audioData.length} bytes`);
 
                     const chunkSize = 1024; // Send in 1KB chunks
                     let chunksSent = 0;
@@ -135,7 +139,9 @@ wss.on("connection", async (ws: WSWebSocket, payload: IPayload) => {
                         if (chunksSent % 100 === 0) console.log(`Sent ${chunksSent} chunks...`);
 
                         // Small delay to prevent flooding the network/buffer
-                        await new Promise(resolve => setTimeout(resolve, 10));
+                        // 1024 bytes / 2 bytes per sample / 16000 samples per second = ~32ms of audio
+                        // Sending every 15ms ensures we stay ahead of playback without flooding
+                        await new Promise(resolve => setTimeout(resolve, 15));
                     }
 
                     console.log(`Finished streaming Bhajan. Total chunks: ${chunksSent}`);
