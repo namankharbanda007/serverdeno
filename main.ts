@@ -120,7 +120,7 @@ wss.on("connection", async (ws: WSWebSocket, payload: IPayload) => {
                 }));
 
                 try {
-                    const audioData = await Deno.readFile("./ॐ-ग-गणपतय-नम-नम-Om-Gan-Ganpataye-Namo-Namah-गणश-मतर.opus");
+                    const audioData = await Deno.readFile("./bhajan.opus");
                     const chunkSize = 1024; // Send in 1KB chunks
 
                     // Send audio in chunks
