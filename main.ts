@@ -120,27 +120,39 @@ wss.on("connection", async (ws: WSWebSocket, payload: IPayload) => {
                 }));
 
                 try {
-                    console.log("Reading file: ./GayatriMantra_G711.org_.wav");
-                    const fileData = await Deno.readFile("./GayatriMantra_G711.org_.wav");
+                    console.log("Reading file: ./bhajan.wav");
+                    // Assuming user renamed it or we are reading the org file, let's stick to known org file for now or bhajan.wav if they made it
+                    // The user request was "implement", implying I should do the resampling.
+                    // Let's read the ORIGINAL 16k file
+                    const inputFilename = "./GayatriMantra_G711.org_.wav";
+                    console.log(`Reading file: ${inputFilename}`);
+                    const fileData = await Deno.readFile(inputFilename);
                     console.log(`File read successfully. Size: ${fileData.length} bytes`);
 
-                    // Skip the 44-byte WAV header to get raw PCM
-                    const audioData = fileData.subarray(44);
-                    console.log(`Skipped header. Audio data size: ${audioData.length} bytes`);
+                    // Skip the 44-byte WAV header to get raw 16kHz PCM
+                    const startOffset = 44;
+                    const raw16k = fileData.subarray(startOffset);
+                    console.log(`Skipped header. Raw 16k size: ${raw16k.length} bytes`);
+
+                    // RESAMPLE TO 24k
+                    console.log("Resampling from 16000 Hz to 24000 Hz...");
+                    const resampledBuffer = resample16kTo24k(raw16k);
+                    console.log(`Resampling complete. New size: ${resampledBuffer.length} bytes`);
 
                     const chunkSize = 1024; // Send in 1KB chunks
                     let chunksSent = 0;
 
                     // Send audio in chunks
-                    for (let i = 0; i < audioData.length; i += chunkSize) {
-                        const chunk = audioData.subarray(i, i + chunkSize);
+                    for (let i = 0; i < resampledBuffer.length; i += chunkSize) {
+                        const chunk = resampledBuffer.subarray(i, i + chunkSize);
                         ws.send(chunk);
                         chunksSent++;
                         if (chunksSent % 100 === 0) console.log(`Sent ${chunksSent} chunks...`);
 
-                        // Small delay to prevent flooding the network/buffer
-                        // 1024 bytes / 2 bytes per sample / 16000 samples per second = ~32ms of audio
-                        // Sending every 15ms ensures we stay ahead of playback without flooding
+                        // Small delay to prevent flooding
+                        // 24000 Hz * 16 bit (2 bytes) = 48000 bytes/sec
+                        // 1024 bytes = ~21.3 ms
+                        // Wait 15ms is safe
                         await new Promise(resolve => setTimeout(resolve, 15));
                     }
 
@@ -158,6 +170,38 @@ wss.on("connection", async (ws: WSWebSocket, payload: IPayload) => {
         }
     });
 });
+
+// Helper: Linear Interpolation Resampler (16k -> 24k)
+function resample16kTo24k(inputBuffer: Uint8Array): Uint8Array {
+    // 1. Convert Uint8Buffer (Bytes) to Int16Array (Samples)
+    const inputSamples = new Int16Array(inputBuffer.buffer, inputBuffer.byteOffset, inputBuffer.byteLength / 2);
+
+    // 2. Calculate New Size (Ratio 1.5)
+    // 16000 * 1.5 = 24000
+    const ratio = 1.5;
+    const outputLength = Math.floor(inputSamples.length * ratio);
+    const outputSamples = new Int16Array(outputLength);
+
+    // 3. Linear Interpolation
+    for (let i = 0; i < outputLength; i++) {
+        const position = i / ratio;
+        const index = Math.floor(position);
+        const fraction = position - index;
+
+        if (index + 1 < inputSamples.length) {
+            const val1 = inputSamples[index];
+            const val2 = inputSamples[index + 1];
+            // Linear interp formula: y = y1 + (y2 - y1) * fraction
+            outputSamples[i] = val1 + (val2 - val1) * fraction;
+        } else {
+            // Edge case: last sample
+            outputSamples[i] = inputSamples[index] || 0;
+        }
+    }
+
+    // 4. Convert back to Uint8Array (Bytes)
+    return new Uint8Array(outputSamples.buffer);
+}
 
 server.on("upgrade", async (req, socket, head) => {
     console.log('foobar upgrade', req.headers);
