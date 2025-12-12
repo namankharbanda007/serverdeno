@@ -108,11 +108,18 @@ wss.on("connection", async (ws: WSWebSocket, payload: IPayload) => {
             throw new Error(`Unknown provider: ${provider}`);
     }
 
+    let activeStreamId = 0;
+
     ws.on("message", async (message) => {
         try {
             const data = JSON.parse(message.toString());
             if (data.type === "action" && data.command === "play_bhajan") {
                 console.log("Received play_bhajan command");
+
+                // Cancel any previous loop
+                activeStreamId++;
+                const currentStreamId = activeStreamId;
+                console.log(`Starting Stream ID: ${currentStreamId}`);
 
                 ws.send(JSON.stringify({
                     type: "server",
@@ -181,10 +188,16 @@ wss.on("connection", async (ws: WSWebSocket, payload: IPayload) => {
 
                     // Send audio in chunks
                     for (let i = 0; i < resampledBuffer.length; i += chunkSize) {
+                        // Check for cancellation
+                        if (activeStreamId !== currentStreamId) {
+                            console.log(`Stream ID ${currentStreamId} cancelled by new request.`);
+                            break;
+                        }
+
                         const chunk = resampledBuffer.subarray(i, i + chunkSize);
                         ws.send(chunk);
                         chunksSent++;
-                        if (chunksSent % 100 === 0) console.log(`Sent ${chunksSent} chunks...`);
+                        if (chunksSent % 100 === 0) console.log(`[Stream ${currentStreamId}] Sent ${chunksSent} chunks...`);
 
                         // Small delay to prevent flooding
                         // 24000 Hz * 16 bit (2 bytes) = 48000 bytes/sec
@@ -193,7 +206,9 @@ wss.on("connection", async (ws: WSWebSocket, payload: IPayload) => {
                         await new Promise(resolve => setTimeout(resolve, 20));
                     }
 
-                    console.log(`Finished streaming Bhajan. Total chunks: ${chunksSent}`);
+                    if (activeStreamId === currentStreamId) {
+                        console.log(`Finished streaming Bhajan. Total chunks: ${chunksSent}`);
+                    }
                 } catch (err) {
                     console.error("Error playing bhajan:", err);
                     ws.send(JSON.stringify({
