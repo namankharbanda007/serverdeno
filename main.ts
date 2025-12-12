@@ -189,8 +189,8 @@ wss.on("connection", async (ws: WSWebSocket, payload: IPayload) => {
                         // Small delay to prevent flooding
                         // 24000 Hz * 16 bit (2 bytes) = 48000 bytes/sec
                         // 1024 bytes = ~21.3 ms
-                        // Wait 15ms is safe
-                        await new Promise(resolve => setTimeout(resolve, 15));
+                        // Sending every 5ms ensures we fill the now larger firmware buffer (40KB) quickly
+                        await new Promise(resolve => setTimeout(resolve, 5));
                     }
 
                     console.log(`Finished streaming Bhajan. Total chunks: ${chunksSent}`);
