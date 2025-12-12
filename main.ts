@@ -199,6 +199,9 @@ function resample16kTo24k(inputBuffer: Uint8Array): Uint8Array {
         }
     }
 
+    // DEBUG: Print first 5 samples
+    console.log("DEBUG RESAMPLE: First 5 samples:", outputSamples.slice(0, 5));
+
     // 4. Convert back to Uint8Array (Bytes)
     return new Uint8Array(outputSamples.buffer);
 }
