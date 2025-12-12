@@ -18,55 +18,7 @@ import { connectToGemini } from "./models/gemini.ts";
 import { connectToElevenLabs } from "./models/elevenlabs.ts";
 import { connectToHume } from "./models/hume.ts";
 
-const server = createServer(async (req, res) => {
-    // Handle HTTP API Requests
-    const url = new URL(req.url || "", `http://${req.headers.host}`);
-
-    if (url.pathname === "/api/bhajan/stream") {
-        try {
-            console.log(`[HTTP] Stream request: ${url.search}`);
-            const bhajanId = url.searchParams.get("id") || "default";
-
-            // Map bhajanId to file
-            // For now, default to the known file
-            const filename = "./GayatriMantra_G711.org_.wav";
-
-            console.log(`[HTTP] Reading file: ${filename}`);
-            const fileData = await Deno.readFile(filename);
-
-            // Skip WAV header (44 bytes)
-            const raw16k = fileData.subarray(44);
-
-            // Re-use our logic: Resample to 24k
-            // Note: resample16kTo24k is defined at bottom of file
-            const raw24k = resample16kTo24k(raw16k);
-
-            res.writeHead(200, {
-                // If we send raw PCM, receiver must know format.
-                // The firmware code implies it expects a stream.
-                // Let's send Raw PCM (Content-Type: application/octet-stream) to match our manual processing
-                'Content-Type': 'application/octet-stream',
-                'Content-Length': raw24k.length
-            });
-
-            res.write(raw24k);
-            res.end();
-            console.log(`[HTTP] Stream complete: ${raw24k.length} bytes`);
-        } catch (error) {
-            console.error("[HTTP] Stream error:", error);
-            res.writeHead(500);
-            res.end("Internal Server Error");
-        }
-    } else {
-        // For other requests (upgrades handled separately), returning 404 might interfere?
-        // Actually upgrades are 'upgrade' event, not 'request'.
-        // But if normal GET hits root?
-        if (!req.headers['upgrade']) {
-            res.writeHead(404);
-            res.end("Not Found");
-        }
-    }
-});
+const server = createServer();
 
 const wss: _WebSocketServer = new WebSocketServer({
     noServer: true,
@@ -159,16 +111,59 @@ wss.on("connection", async (ws: WSWebSocket, payload: IPayload) => {
     ws.on("message", async (message) => {
         try {
             const data = JSON.parse(message.toString());
-            if (data.type === "play_bhajan") {
-                console.log("Command: play_bhajan");
-                // New Architecture: Tell ESP32 to stream via HTTP
-                // Do NOT stream binary here.
+            if (data.type === "action" && data.command === "play_bhajan") {
+                console.log("Received play_bhajan command");
+
                 ws.send(JSON.stringify({
                     type: "server",
-                    msg: "start_bhajan_stream",
-                    bhajan_id: "default"
+                    msg: "Playing Bhajan..."
                 }));
-                console.log("Sent 'start_bhajan_stream' command to device");
+
+                try {
+                    console.log("Reading file: ./bhajan.wav");
+                    // Assuming user renamed it or we are reading the org file, let's stick to known org file for now or bhajan.wav if they made it
+                    // The user request was "implement", implying I should do the resampling.
+                    // Let's read the ORIGINAL 16k file
+                    const inputFilename = "./GayatriMantra_G711.org_.wav";
+                    console.log(`Reading file: ${inputFilename}`);
+                    const fileData = await Deno.readFile(inputFilename);
+                    console.log(`File read successfully. Size: ${fileData.length} bytes`);
+
+                    // Skip the 44-byte WAV header to get raw 16kHz PCM
+                    const startOffset = 44;
+                    const raw16k = fileData.subarray(startOffset);
+                    console.log(`Skipped header. Raw 16k size: ${raw16k.length} bytes`);
+
+                    // RESAMPLE TO 24k
+                    console.log("Resampling from 16000 Hz to 24000 Hz...");
+                    const resampledBuffer = resample16kTo24k(raw16k);
+                    console.log(`Resampling complete. New size: ${resampledBuffer.length} bytes`);
+
+                    const chunkSize = 1024; // Send in 1KB chunks
+                    let chunksSent = 0;
+
+                    // Send audio in chunks
+                    for (let i = 0; i < resampledBuffer.length; i += chunkSize) {
+                        const chunk = resampledBuffer.subarray(i, i + chunkSize);
+                        ws.send(chunk);
+                        chunksSent++;
+                        if (chunksSent % 100 === 0) console.log(`Sent ${chunksSent} chunks...`);
+
+                        // Small delay to prevent flooding
+                        // 24000 Hz * 16 bit (2 bytes) = 48000 bytes/sec
+                        // 1024 bytes = ~21.3 ms
+                        // Wait 15ms is safe
+                        await new Promise(resolve => setTimeout(resolve, 15));
+                    }
+
+                    console.log(`Finished streaming Bhajan. Total chunks: ${chunksSent}`);
+                } catch (err) {
+                    console.error("Error playing bhajan:", err);
+                    ws.send(JSON.stringify({
+                        type: "server",
+                        msg: "Error playing audio file"
+                    }));
+                }
             }
         } catch (e) {
             // Ignore non-JSON messages or errors
