@@ -121,22 +121,59 @@ wss.on("connection", async (ws: WSWebSocket, payload: IPayload) => {
 
                 try {
                     console.log("Reading file: ./bhajan.wav");
-                    // Assuming user renamed it or we are reading the org file, let's stick to known org file for now or bhajan.wav if they made it
-                    // The user request was "implement", implying I should do the resampling.
-                    // Let's read the ORIGINAL 16k file
+                    // Try the original file
                     const inputFilename = "./GayatriMantra_G711.org_.wav";
                     console.log(`Reading file: ${inputFilename}`);
                     const fileData = await Deno.readFile(inputFilename);
                     console.log(`File read successfully. Size: ${fileData.length} bytes`);
 
-                    // Skip the 44-byte WAV header to get raw 16kHz PCM
-                    const startOffset = 44;
-                    const raw16k = fileData.subarray(startOffset);
-                    console.log(`Skipped header. Raw 16k size: ${raw16k.length} bytes`);
+                    // PARSE WAV HEADER
+                    const view = new DataView(fileData.buffer);
+                    const audioFormat = view.getUint16(20, true); // Offset 20, LE
+                    const channels = view.getUint16(22, true);
+                    const sampleRate = view.getUint32(24, true);
+                    const byteRate = view.getUint32(28, true);
+                    const blockAlign = view.getUint16(32, true);
+                    const bitsPerSample = view.getUint16(34, true);
+
+                    console.log(`WAV Header: Format=${audioFormat}, Channels=${channels}, Rate=${sampleRate}, Bits=${bitsPerSample}`);
+
+                    let raw16k: Uint8Array;
+                    const startOffset = 44; // Standard header size assumption, but lets stick to it for now
+
+                    if (audioFormat === 1) {
+                        // PCM
+                        console.log("Format is PCM. Proceeding...");
+                        raw16k = fileData.subarray(startOffset);
+                    } else if (audioFormat === 6 || audioFormat === 7) {
+                        // G.711 A-law (6) or u-law (7)
+                        console.log(`Format is G.711 (${audioFormat}). Decoding to PCM...`);
+                        const g711Data = fileData.subarray(startOffset);
+                        raw16k = decodeG711(g711Data, audioFormat === 6); // Implement decodeG711 helper
+                        console.log(`Decoded G.711. New PCM size: ${raw16k.length}`);
+                    } else if (audioFormat === 65534) {
+                        // Extensible, likely PCM but we warn
+                        console.log("Format is WAVE_FORMAT_EXTENSIBLE. Assuming PCM...");
+                        raw16k = fileData.subarray(startOffset);
+                    } else {
+                        console.warn(`WARNING: Unknown WAV format ${audioFormat}. sending as is...`);
+                        raw16k = fileData.subarray(startOffset);
+                    }
 
                     // RESAMPLE TO 24k
                     console.log("Resampling from 16000 Hz to 24000 Hz...");
-                    const resampledBuffer = resample16kTo24k(raw16k);
+                    // Note: If G.711 was 8000Hz (typical), we might need to double resample or change ratio
+                    // But user said it was converted to 16kHz
+
+                    let resampledBuffer;
+                    if (sampleRate === 8000) {
+                        console.log("Source is 8kHz. Upsampling 8k -> 24k (3x)");
+                        resampledBuffer = resample8kTo24k(raw16k);
+                    } else {
+                        // Assume 16k
+                        resampledBuffer = resample16kTo24k(raw16k);
+                    }
+
                     console.log(`Resampling complete. New size: ${resampledBuffer.length} bytes`);
 
                     const chunkSize = 1024; // Send in 1KB chunks
@@ -204,6 +241,56 @@ function resample16kTo24k(inputBuffer: Uint8Array): Uint8Array {
 
     // 4. Convert back to Uint8Array (Bytes)
     return new Uint8Array(outputSamples.buffer);
+}
+
+function resample8kTo24k(inputBuffer: Uint8Array): Uint8Array {
+    // 8k -> 24k is exactly 3x
+    const inputSamples = new Int16Array(inputBuffer.buffer, inputBuffer.byteOffset, inputBuffer.byteLength / 2);
+    const ratio = 3;
+    const outputLength = inputSamples.length * ratio;
+    const outputSamples = new Int16Array(outputLength);
+
+    for (let i = 0; i < inputSamples.length; i++) {
+        const sample = inputSamples[i];
+        // Simple sample repeat (Zero Order Hold) or Linear?
+        // Linear:
+        const nextSample = (i + 1 < inputSamples.length) ? inputSamples[i + 1] : sample;
+
+        outputSamples[i * 3] = sample;
+        outputSamples[i * 3 + 1] = Math.floor(sample + (nextSample - sample) * 0.33);
+        outputSamples[i * 3 + 2] = Math.floor(sample + (nextSample - sample) * 0.66);
+    }
+    return new Uint8Array(outputSamples.buffer);
+}
+
+function decodeG711(data: Uint8Array, isALaw: boolean): Uint8Array {
+    const pcms = new Int16Array(data.length);
+    for (let i = 0; i < data.length; i++) {
+        const val = data[i];
+        pcms[i] = isALaw ? alaw2linear(val) : ulaw2linear(val);
+    }
+    return new Uint8Array(pcms.buffer);
+}
+
+// G.711 Lookup Tables / Algorithms
+// Simplified for brevity, standard algorithms
+function ulaw2linear(u_val: number): number {
+    u_val = ~u_val;
+    let t = ((u_val & 0x0F) << 3) + 0x84;
+    t <<= (u_val & 0x70) >> 4;
+    return ((u_val & 0x80) ? (0x84 - t) : (t - 0x84));
+}
+
+function alaw2linear(a_val: number): number {
+    a_val ^= 0x55;
+    let t = (a_val & 0x0F) << 4;
+    let seg = (a_val & 0x70) >> 4;
+    switch (seg) {
+        case 0: t += 8; break;
+        case 1: t += 0x108; break;
+        default: t += 0x108; t <<= (seg - 1);
+    }
+    return ((a_val & 0x80) ? t : -t);
 }
 
 server.on("upgrade", async (req, socket, head) => {
