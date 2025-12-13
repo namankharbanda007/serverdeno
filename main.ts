@@ -153,12 +153,21 @@ wss.on("connection", async (ws: WSWebSocket, payload: IPayload) => {
                     */
 
 
+                    // STOP AI (Gemini/OpenAI) before starting Bhajan
+                    ws.emit("stop_ai");
+                    console.log("Emitted stop_ai to kill active sessions.");
+
                     // ENCODE TO OPUS
                     // Use the EXACT SAME encoder instance and settings as Gemini (imported from utils)
                     // This maintains the continuous stream state the ESP32 Decoder expects.
                     console.log(`Encoding to Opus. Frame Size: ${FRAME_SIZE} bytes (120ms)`);
 
                     let chunksSent = 0;
+
+                    // Buffer Burst Strategy:
+                    // ESP32 buffer is 16KB. Opus frames are ~200 bytes.
+                    // We can safely burst ~50 frames (~6 seconds) to fill the buffer instantly.
+                    const BURST_COUNT = 50;
 
                     // Loop through PCM buffer in correct Frame-sized chunks
                     for (let i = 0; i < resampledBuffer.length; i += FRAME_SIZE) {
@@ -185,12 +194,19 @@ wss.on("connection", async (ws: WSWebSocket, payload: IPayload) => {
                             // Send Opus Packet
                             ws.send(opusPacket);
                             chunksSent++;
+
                             if (chunksSent % 50 === 0) console.log(`[Stream ${currentStreamId}] Sent ${chunksSent} Opus frames...`);
 
-                            // Throttle to real-time
-                            // Frame duration is 120ms
-                            // Wait slightly less to keep buffer full: 110ms
-                            await new Promise(resolve => setTimeout(resolve, 110));
+                            // Throttle to real-time AFTER burst
+                            if (chunksSent > BURST_COUNT) {
+                                // Frame duration is 120ms
+                                // Wait slightly less to keep buffer full: 110ms
+                                await new Promise(resolve => setTimeout(resolve, 110));
+                            } else {
+                                // Burst mode: tiny delay just to not choke network stack
+                                await new Promise(resolve => setTimeout(resolve, 5));
+                            }
+
                         } catch (e) {
                             console.error("Opus encoding error:", e);
                         }
