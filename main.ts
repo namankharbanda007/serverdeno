@@ -5,6 +5,7 @@ import type {
     WebSocketServer as _WebSocketServer,
 } from "npm:@types/ws";
 import { authenticateUser, elevenLabsApiKey, encoder, FRAME_SIZE, SAMPLE_RATE as TARGET_SAMPLE_RATE } from "./utils.ts";
+import { Encoder } from "npm:@evan/opus";
 import {
     createFirstMessage,
     createSystemPrompt,
@@ -179,8 +180,17 @@ wss.on("connection", async (ws: WSWebSocket, payload: IPayload) => {
                     console.log(`Resampling complete. New PCM size: ${resampledBuffer.length} bytes`);
 
                     // ENCODE TO OPUS
-                    // Use the EXACT SAME encoder instance and settings as Gemini (imported from utils)
-                    console.log(`Encoding to Opus. Frame Size: ${FRAME_SIZE} bytes`);
+                    // Create a NEW encoder instance to avoid state pollution, but use SAME params
+                    const opusEncoder = new Encoder({
+                        channels: 1,
+                        sample_rate: TARGET_SAMPLE_RATE, // 24000
+                        application: "voip"
+                    });
+                    // IMPORTANT: Set frame duration to match utils (120ms)
+                    opusEncoder.expert_frame_duration = 120; // 120ms
+                    opusEncoder.bitrate = 12000;
+
+                    console.log(`Encoding to Opus. Frame Size: ${FRAME_SIZE} bytes (120ms)`);
 
                     let chunksSent = 0;
 
@@ -203,8 +213,8 @@ wss.on("connection", async (ws: WSWebSocket, payload: IPayload) => {
                         }
 
                         try {
-                            // Encode using shared encoder
-                            const opusPacket = encoder.encode(pcmChunk);
+                            // Encode using local encoder
+                            const opusPacket = opusEncoder.encode(pcmChunk);
 
                             // Send Opus Packet
                             ws.send(opusPacket);
@@ -212,7 +222,7 @@ wss.on("connection", async (ws: WSWebSocket, payload: IPayload) => {
                             if (chunksSent % 50 === 0) console.log(`[Stream ${currentStreamId}] Sent ${chunksSent} Opus frames...`);
 
                             // Throttle to real-time
-                            // Frame duration is 120ms (from utils.ts)
+                            // Frame duration is 120ms
                             // Wait slightly less to keep buffer full: 110ms
                             await new Promise(resolve => setTimeout(resolve, 110));
                         } catch (e) {
