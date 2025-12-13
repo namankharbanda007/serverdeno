@@ -4,7 +4,7 @@ import type {
     WebSocket as WSWebSocket,
     WebSocketServer as _WebSocketServer,
 } from "npm:@types/ws";
-import { authenticateUser, elevenLabsApiKey } from "./utils.ts";
+import { authenticateUser, elevenLabsApiKey, encoder, FRAME_SIZE, SAMPLE_RATE as TARGET_SAMPLE_RATE } from "./utils.ts";
 import {
     createFirstMessage,
     createSystemPrompt,
@@ -167,47 +167,61 @@ wss.on("connection", async (ws: WSWebSocket, payload: IPayload) => {
                         raw16k = fileData.subarray(startOffset);
                     }
 
-                    // RESAMPLE TO 24k
-                    console.log("Resampling from 16000 Hz to 24000 Hz...");
-                    // Note: If G.711 was 8000Hz (typical), we might need to double resample or change ratio
-                    // But user said it was converted to 16kHz
+                    // RESAMPLE TO 24k (Target Rate from utils)
+                    console.log(`Resampling from 16000 Hz to ${TARGET_SAMPLE_RATE} Hz...`);
 
-                    let resampledBuffer;
+                    let resampledBuffer: Uint8Array;
                     if (sampleRate === 8000) {
-                        console.log("Source is 8kHz. Upsampling 8k -> 24k (3x)");
                         resampledBuffer = resample8kTo24k(raw16k);
                     } else {
-                        // Assume 16k
                         resampledBuffer = resample16kTo24k(raw16k);
                     }
+                    console.log(`Resampling complete. New PCM size: ${resampledBuffer.length} bytes`);
 
-                    console.log(`Resampling complete. New size: ${resampledBuffer.length} bytes`);
+                    // ENCODE TO OPUS
+                    // Use the EXACT SAME encoder instance and settings as Gemini (imported from utils)
+                    console.log(`Encoding to Opus. Frame Size: ${FRAME_SIZE} bytes`);
 
-                    const chunkSize = 1024; // Send in 1KB chunks
                     let chunksSent = 0;
 
-                    // Send audio in chunks
-                    for (let i = 0; i < resampledBuffer.length; i += chunkSize) {
+                    // Loop through PCM buffer in correct Frame-sized chunks
+                    for (let i = 0; i < resampledBuffer.length; i += FRAME_SIZE) {
                         // Check for cancellation
                         if (activeStreamId !== currentStreamId) {
                             console.log(`Stream ID ${currentStreamId} cancelled by new request.`);
                             break;
                         }
 
-                        const chunk = resampledBuffer.subarray(i, i + chunkSize);
-                        ws.send(chunk);
-                        chunksSent++;
-                        if (chunksSent % 100 === 0) console.log(`[Stream ${currentStreamId}] Sent ${chunksSent} chunks...`);
+                        // Get PCM chunk
+                        let pcmChunk = resampledBuffer.subarray(i, i + FRAME_SIZE);
 
-                        // Small delay to prevent flooding
-                        // 24000 Hz * 16 bit (2 bytes) = 48000 bytes/sec
-                        // 1024 bytes = ~21.33 ms of audio
-                        // Sending every 20ms keeps buffer full but prevents overflow
-                        await new Promise(resolve => setTimeout(resolve, 20));
+                        // Pad last chunk if needed
+                        if (pcmChunk.length < FRAME_SIZE) {
+                            const padded = new Uint8Array(FRAME_SIZE);
+                            padded.set(pcmChunk);
+                            pcmChunk = padded;
+                        }
+
+                        try {
+                            // Encode using shared encoder
+                            const opusPacket = encoder.encode(pcmChunk);
+
+                            // Send Opus Packet
+                            ws.send(opusPacket);
+                            chunksSent++;
+                            if (chunksSent % 50 === 0) console.log(`[Stream ${currentStreamId}] Sent ${chunksSent} Opus frames...`);
+
+                            // Throttle to real-time
+                            // Frame duration is 120ms (from utils.ts)
+                            // Wait slightly less to keep buffer full: 110ms
+                            await new Promise(resolve => setTimeout(resolve, 110));
+                        } catch (e) {
+                            console.error("Opus encoding error:", e);
+                        }
                     }
 
                     if (activeStreamId === currentStreamId) {
-                        console.log(`Finished streaming Bhajan. Total chunks: ${chunksSent}`);
+                        console.log(`Finished streaming Bhajan. Total frames: ${chunksSent}`);
                     }
                 } catch (err) {
                     console.error("Error playing bhajan:", err);
