@@ -278,10 +278,4 @@ export const connectToGemini = async (
 			console.log("Closed debug audio file.");
 		}
 	});
-	// Custom event to stop AI processing (e.g., for play_bhajan)
-	ws.on("stop_ai", async () => {
-		console.log("Received stop_ai event. Closing Gemini session.");
-		await geminiSession?.close();
-		geminiSession = null; // This breaks the while(geminiSession) loop
-	});
 };
