@@ -127,56 +127,30 @@ wss.on("connection", async (ws: WSWebSocket, payload: IPayload) => {
                 }));
 
                 try {
-                    console.log("Reading file: ./bhajan.wav");
-                    // Try the original file
-                    const inputFilename = "./GayatriMantra_G711.org_.wav";
-                    console.log(`Reading file: ${inputFilename}`);
-                    const fileData = await Deno.readFile(inputFilename);
-                    console.log(`File read successfully. Size: ${fileData.length} bytes`);
+                    // GENERATE SYNTHETIC SINE WAVE (TESTING)
+                    console.log("DEBUG: Generating synthetic 440Hz sine wave for testing...");
+                    const durationSeconds = 5;
+                    const sampleRate = TARGET_SAMPLE_RATE; // 24000
+                    const totalSamples = sampleRate * durationSeconds;
+                    const frequency = 440; // A4 note
 
-                    // PARSE WAV HEADER
-                    const view = new DataView(fileData.buffer);
-                    const audioFormat = view.getUint16(20, true); // Offset 20, LE
-                    const channels = view.getUint16(22, true);
-                    const sampleRate = view.getUint32(24, true);
-                    const byteRate = view.getUint32(28, true);
-                    const blockAlign = view.getUint16(32, true);
-                    const bitsPerSample = view.getUint16(34, true);
-
-                    console.log(`WAV Header: Format=${audioFormat}, Channels=${channels}, Rate=${sampleRate}, Bits=${bitsPerSample}`);
-
-                    let raw16k: Uint8Array;
-                    const startOffset = 44; // Standard header size assumption, but lets stick to it for now
-
-                    if (audioFormat === 1) {
-                        // PCM
-                        console.log("Format is PCM. Proceeding...");
-                        raw16k = fileData.subarray(startOffset);
-                    } else if (audioFormat === 6 || audioFormat === 7) {
-                        // G.711 A-law (6) or u-law (7)
-                        console.log(`Format is G.711 (${audioFormat}). Decoding to PCM...`);
-                        const g711Data = fileData.subarray(startOffset);
-                        raw16k = decodeG711(g711Data, audioFormat === 6); // Implement decodeG711 helper
-                        console.log(`Decoded G.711. New PCM size: ${raw16k.length}`);
-                    } else if (audioFormat === 65534) {
-                        // Extensible, likely PCM but we warn
-                        console.log("Format is WAVE_FORMAT_EXTENSIBLE. Assuming PCM...");
-                        raw16k = fileData.subarray(startOffset);
-                    } else {
-                        console.warn(`WARNING: Unknown WAV format ${audioFormat}. sending as is...`);
-                        raw16k = fileData.subarray(startOffset);
+                    // Create Int16Array for audio samples
+                    const samples = new Int16Array(totalSamples);
+                    for (let i = 0; i < totalSamples; i++) {
+                        const t = i / sampleRate;
+                        const sample = Math.sin(2 * Math.PI * frequency * t);
+                        samples[i] = sample * 32767; // Scale to 16-bit PCM range
                     }
 
-                    // RESAMPLE TO 24k (Target Rate from utils)
-                    console.log(`Resampling from 16000 Hz to ${TARGET_SAMPLE_RATE} Hz...`);
+                    // Convert to Uint8Array for processing
+                    const resampledBuffer = new Uint8Array(samples.buffer);
+                    console.log(`Generated sine wave. Size: ${resampledBuffer.length} bytes`);
 
-                    let resampledBuffer: Uint8Array;
-                    if (sampleRate === 8000) {
-                        resampledBuffer = resample8kTo24k(raw16k);
-                    } else {
-                        resampledBuffer = resample16kTo24k(raw16k);
-                    }
-                    console.log(`Resampling complete. New PCM size: ${resampledBuffer.length} bytes`);
+                    /* 
+                    // DISABLE FILE READING FOR TEST
+                    // console.log("Reading file: ./bhajan.wav");
+                    // ... (rest of file reading logic commented out)
+                    */
 
 
                     // ENCODE TO OPUS
