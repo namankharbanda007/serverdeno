@@ -5,7 +5,7 @@ import type {
     WebSocketServer as _WebSocketServer,
 } from "npm:@types/ws";
 import { authenticateUser, elevenLabsApiKey, encoder, FRAME_SIZE, SAMPLE_RATE as TARGET_SAMPLE_RATE } from "./utils.ts";
-import { Encoder } from "npm:@evan/opus";
+import { Encoder } from "@evan/opus";
 import {
     createFirstMessage,
     createSystemPrompt,
