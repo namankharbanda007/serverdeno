@@ -178,6 +178,8 @@ export function extractPcmFromWav(wavBuffer: Buffer): Buffer | null {
 
         console.error('No data chunk found in WAV file');
         return null;
+    } catch (error) {
+        console.error("Error extracting PCM from WAV:", error);
         return null;
     }
 }
