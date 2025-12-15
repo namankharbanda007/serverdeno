@@ -107,8 +107,8 @@ declare global {
         favorite_phrases: string;
     }
 
-    interface IUserMetadata {}
-    interface IBusinessMetadata {}
+    interface IUserMetadata { }
+    interface IBusinessMetadata { }
 
     type UserInfo =
         | {
@@ -138,6 +138,7 @@ declare global {
         language: ILanguage;
         language_code: string;
         session_time: number;
+        last_session_reset: string | null;
         user_info: UserInfo;
         device_id: string;
         device?: IDevice;

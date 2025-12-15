@@ -49,8 +49,7 @@ export const getDeviceInfo = async (
 
 export const composeChatHistory = (data: IConversation[]) => {
     const messages = data.map((chat: IConversation) =>
-        `${chat.role} [${
-            new Date(chat.created_at).toISOString()
+        `${chat.role} [${new Date(chat.created_at).toISOString()
         }]: ${chat.content}`
     ).join("\n");
 
@@ -244,4 +243,63 @@ export const getOpenAiApiKey = async (
     const decryptedKey = decryptSecret(encrypted_key, iv, masterKey);
 
     return decryptedKey;
+};
+
+export const updateUserUsage = async (
+    supabase: SupabaseClient,
+    userId: string,
+    sessionTime: number,
+) => {
+    const { error } = await supabase
+        .from("users")
+        .update({ session_time: sessionTime })
+        .eq("user_id", userId);
+
+    if (error) {
+        console.error("Error updating user usage:", error);
+    }
+};
+
+export const checkAndResetUsage = async (
+    supabase: SupabaseClient,
+    user: IUser,
+): Promise<IUser> => {
+    const lastResetStr = user.last_session_reset;
+    const now = new Date();
+    let shouldReset = false;
+
+    if (!lastResetStr) {
+        shouldReset = true;
+    } else {
+        const lastReset = new Date(lastResetStr);
+        const diffTime = Math.abs(now.getTime() - lastReset.getTime());
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+        if (diffDays >= 30) {
+            shouldReset = true;
+        }
+    }
+
+    if (shouldReset) {
+        console.log(`Resetting usage for user ${user.user_id}`);
+        const { data, error } = await supabase
+            .from("users")
+            .update({
+                session_time: 0,
+                last_session_reset: now.toISOString(),
+            })
+            .eq("user_id", user.user_id)
+            .select() // important to return updated record
+            .single();
+
+        if (error) {
+            console.error("Error resetting usage:", error);
+            return user; // fallback to existing user state
+        }
+
+        // Return updated user with reset reset time and session time
+        // We know structure matches IUser mostly, but let's be safe merging
+        return { ...user, ...data } as IUser;
+    }
+
+    return user;
 };

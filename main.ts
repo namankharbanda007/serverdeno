@@ -4,15 +4,22 @@ import type {
     WebSocket as WSWebSocket,
     WebSocketServer as _WebSocketServer,
 } from "npm:@types/ws";
-import { authenticateUser, elevenLabsApiKey } from "./utils.ts";
 import {
+    checkAndResetUsage,
     createFirstMessage,
     createSystemPrompt,
     getChatHistory,
     getSupabaseClient,
+    updateUserUsage,
 } from "./supabase.ts";
+import {
+    authenticateUser,
+    elevenLabsApiKey,
+    FREE_LIMIT_SECONDS,
+    PREMIUM_LIMIT_SECONDS,
+    isDev
+} from "./utils.ts";
 import { SupabaseClient } from "@supabase/supabase-js";
-import { isDev } from "./utils.ts";
 import { connectToOpenAI } from "./models/openai.ts";
 import { connectToGemini } from "./models/gemini.ts";
 import { connectToElevenLabs } from "./models/elevenlabs.ts";
@@ -31,7 +38,60 @@ wss.on('headers', (headers, req) => {
 });
 
 wss.on("connection", async (ws: WSWebSocket, payload: IPayload) => {
-    const { user, supabase } = payload;
+    const { supabase } = payload;
+    let { user } = payload;
+
+    // Check and reset usage if needed
+    user = await checkAndResetUsage(supabase, user);
+
+    // Check if user has exceeded their limit
+    const limit = user.is_premium ? PREMIUM_LIMIT_SECONDS : FREE_LIMIT_SECONDS;
+    if (user.session_time >= limit) {
+        console.log(`User ${user.user_id} exceeded limit. Disconnecting.`);
+        ws.send(JSON.stringify({
+            type: "error",
+            code: "LIMIT_EXCEEDED",
+            message: "You have reached your monthly usage limit. Please upgrade to Premium for more time.",
+        }));
+        ws.close();
+        return;
+    }
+
+    // Start tracking usage
+    const sessionStartTime = Date.now();
+    const initialSessionTime = user.session_time;
+
+    // Update usage every 30 seconds
+    const usageInterval = setInterval(async () => {
+        const elapsedSeconds = Math.floor((Date.now() - sessionStartTime) / 1000);
+        const currentTotal = initialSessionTime + elapsedSeconds;
+
+        // Update DB
+        await updateUserUsage(supabase, user.user_id, currentTotal);
+
+        // Check Limit
+        if (currentTotal >= limit) {
+            console.log(`User ${user.user_id} reached limit during session.`);
+            ws.send(JSON.stringify({
+                type: "error",
+                code: "LIMIT_EXCEEDED",
+                message: "You have reached your monthly usage limit.",
+            }));
+            ws.close();
+        }
+    }, 30000); // 30 seconds
+
+    ws.on("close", async () => {
+        clearInterval(usageInterval);
+        // Final update on close
+        const elapsedSeconds = Math.floor((Date.now() - sessionStartTime) / 1000);
+        const currentTotal = initialSessionTime + elapsedSeconds;
+        if (currentTotal < limit) { // Don't verify limit here, just save, unless we want to prevent over-saving? 
+            // Actually just save proper value.
+            await updateUserUsage(supabase, user.user_id, currentTotal);
+        }
+    });
+
 
     let connectionPcmFile: Deno.FsFile | null = null;
     if (isDev) {
