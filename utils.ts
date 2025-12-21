@@ -136,6 +136,42 @@ export function downsamplePcm(pcmBuffer: Buffer, fromRate: number, toRate: numbe
     return outputBuffer;
 }
 
+// Function to upsample PCM audio (e.g., 16kHz → 24kHz) using linear interpolation
+export function upsamplePcm(pcmBuffer: Buffer, fromRate: number, toRate: number): Buffer {
+    if (fromRate === toRate) {
+        return pcmBuffer;
+    }
+    if (fromRate > toRate) {
+        // Use downsample instead
+        return downsamplePcm(pcmBuffer, fromRate, toRate);
+    }
+
+    const ratio = toRate / fromRate; // e.g., 24000/16000 = 1.5
+    const inputSamples = pcmBuffer.length / 2; // 16-bit = 2 bytes per sample
+    const outputSamples = Math.floor(inputSamples * ratio);
+    const outputBuffer = Buffer.alloc(outputSamples * 2);
+
+    for (let i = 0; i < outputSamples; i++) {
+        const sourcePos = i / ratio; // Position in source
+        const sourceIndex = Math.floor(sourcePos);
+        const fraction = sourcePos - sourceIndex;
+
+        // Get current and next sample for interpolation
+        const sample1 = sourceIndex < inputSamples
+            ? pcmBuffer.readInt16LE(sourceIndex * 2)
+            : 0;
+        const sample2 = (sourceIndex + 1) < inputSamples
+            ? pcmBuffer.readInt16LE((sourceIndex + 1) * 2)
+            : sample1;
+
+        // Linear interpolation
+        const interpolatedSample = Math.round(sample1 + (sample2 - sample1) * fraction);
+        outputBuffer.writeInt16LE(Math.max(-32768, Math.min(32767, interpolatedSample)), i * 2);
+    }
+
+    return outputBuffer;
+}
+
 
 // Function to extract PCM data from WAV file
 export function extractPcmFromWav(wavBuffer: Buffer): Buffer | null {

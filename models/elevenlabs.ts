@@ -9,7 +9,10 @@ import {
 } from "npm:@elevenlabs/client";
 
 import { addConversation, getDeviceInfo } from "../supabase.ts";
-import { encoder, FRAME_SIZE, isDev } from "../utils.ts";
+import { encoder, FRAME_SIZE, isDev, upsamplePcm, SAMPLE_RATE } from "../utils.ts";
+
+// ElevenLabs Conversational AI outputs 16kHz PCM audio
+const ELEVENLABS_SAMPLE_RATE = 16000;
 
 // Calculate audio level for debugging
 function calculateAudioLevel(audioData: any): number {
@@ -174,8 +177,13 @@ export const connectToElevenLabs = async (
                             hasResponseStarted = true;
                         }
 
-                        const audioBuffer = Buffer.from(event.audio_event.audio_base_64, "base64");
-                        console.log(`Received audio from ElevenLabs: ${audioBuffer.length} bytes, processing into ${Math.ceil(audioBuffer.length / FRAME_SIZE)} frames`);
+                        let audioBuffer = Buffer.from(event.audio_event.audio_base_64, "base64");
+                        console.log(`Received audio from ElevenLabs: ${audioBuffer.length} bytes at ${ELEVENLABS_SAMPLE_RATE}Hz`);
+
+                        // Upsample from ElevenLabs' 16kHz to our encoder's 24kHz
+                        // Without this, audio plays 1.5x faster (24000/16000 = 1.5)
+                        audioBuffer = upsamplePcm(audioBuffer, ELEVENLABS_SAMPLE_RATE, SAMPLE_RATE);
+                        console.log(`Upsampled to ${audioBuffer.length} bytes at ${SAMPLE_RATE}Hz, processing into ${Math.ceil(audioBuffer.length / FRAME_SIZE)} frames`);
 
                         let framesSent = 0;
                         // Process audio in frames for Opus encoding
