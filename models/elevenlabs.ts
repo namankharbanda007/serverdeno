@@ -9,7 +9,7 @@ import {
 } from "npm:@elevenlabs/client";
 
 import { addConversation, getDeviceInfo } from "../supabase.ts";
-import { encoder, FRAME_SIZE, isDev, upsamplePcm, SAMPLE_RATE } from "../utils.ts";
+import { encoder, FRAME_SIZE, isDev, upsamplePcm, SAMPLE_RATE, boostLimitPCM16LEInPlace } from "../utils.ts";
 
 // ElevenLabs Conversational AI outputs 16kHz PCM audio
 const ELEVENLABS_SAMPLE_RATE = 16000;
@@ -183,7 +183,11 @@ export const connectToElevenLabs = async (
                         // Upsample from ElevenLabs' 16kHz to our encoder's 24kHz
                         // Without this, audio plays 1.5x faster (24000/16000 = 1.5)
                         audioBuffer = upsamplePcm(audioBuffer, ELEVENLABS_SAMPLE_RATE, SAMPLE_RATE);
-                        console.log(`Upsampled to ${audioBuffer.length} bytes at ${SAMPLE_RATE}Hz, processing into ${Math.ceil(audioBuffer.length / FRAME_SIZE)} frames`);
+
+                        // Boost audio volume to match Gemini's loudness (ElevenLabs tends to be quieter)
+                        boostLimitPCM16LEInPlace(audioBuffer, /*gainDb=*/6.0, /*ceiling=*/0.89);
+
+                        console.log(`Upsampled and boosted to ${audioBuffer.length} bytes at ${SAMPLE_RATE}Hz, processing into ${Math.ceil(audioBuffer.length / FRAME_SIZE)} frames`);
 
                         let framesSent = 0;
                         // Process audio in frames for Opus encoding
